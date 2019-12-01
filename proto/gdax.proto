@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package pb;
+
+message SpreadPriceRequest {
+  string Market = 1;
+  string Side = 2;
+  string Depth = 3;
+}
+
+message SpreadPrice {
+  string Market = 1;
+  string Price = 2;
+}
+
+service SpreadPriceService {
+  rpc GetSpreadPrice(SpreadPriceRequest) returns (SpreadPrice) {};
+}
+
+message TickerRequest {
+  string Market = 1;
+}
+
+message Ticker {
+  string Market = 1;
+  string MaxBid = 2;
+  string MinAsk = 3;
+}
+
+service TickerService {
+  rpc GetTicker(TickerRequest) returns (Ticker) {};
+}

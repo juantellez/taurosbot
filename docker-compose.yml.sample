@@ -1,0 +1,62 @@
+version: '3'
+services:
+  bot_bch: # add as many bot executables each with its own bots json filename and credentials json file
+    image: "taurosbot/tb"
+    restart: on-failure
+    command: "/bots/bot-1-configuration.json /bots/credential-1-configuration.json"
+    depends_on:
+      - ox
+      - bal_mm
+      - gdax
+    volumes:
+      - /home/docker/volumes/bots:/bots
+    networks:
+      - botsnet
+  bot_btc:
+    image: "taurosbot/tb"
+    restart: on-failure
+    command: "/bots/bot-2-configuration.json /bots/credential-2-configuration.json"
+    depends_on:
+      - ox
+      - bal_dn
+      - gdax
+    volumes:
+      - /home/docker/volumes/bots:/bots
+    networks:
+      - botsnet
+  ox: # only one openexchangerate service needed 
+    #port 2223
+    image: "taurosbot/ox" 
+    restart: on-failure
+    volumes:
+      - /home/docker/volumes/bots:/bots
+    command: "/bots/credential-1-configuration.json"
+    networks:
+      - botsnet
+  gdax: # only one gdax service needed
+    #port 2222
+    image: "taurosbot/gdax"
+    restart: on-failure
+    networks:
+      - botsnet
+  bal_mm: # one balance service per tauros account
+  # all balance service use port 2224
+    image: "taurosbot/bal"
+    restart: unless-stopped
+    volumes:
+      - /home/docker/volumes/bots:/bots
+    command: "python ./balances.py /bots/credential-1-configuration.json"
+    networks:
+      - botsnet
+  bal_dn: 
+    image: "taurosbot/bal"
+    restart: unless-stopped
+    volumes:
+      - /home/docker/volumes/bots:/bots
+    command: "python ./balances.py /bots/credential-2-configuration.json"
+    networks:
+      - botsnet
+
+networks:
+  botsnet:
+    

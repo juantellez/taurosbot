@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package pb;
+
+message OxRequest {
+  string Currency = 1;
+}
+
+message OxRate {
+  string Currency = 1;
+  string Rate = 2;
+}
+
+service OxService {
+  rpc GetOxRate(OxRequest) returns (OxRate) {};
+}

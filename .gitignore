@@ -1,0 +1,6 @@
+*.json
+bin/
+bots/
+vendor/
+.vscode/
+docker-compose.yml

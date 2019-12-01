@@ -1,0 +1,4 @@
+env
+*.pyc
+.vscode/
+trading_bot.py

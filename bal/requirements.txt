@@ -1,0 +1,5 @@
+pika==1.0.1
+requests==2.22.0
+python-socketio
+grpcio
+grpcio-tools

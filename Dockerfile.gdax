@@ -1,0 +1,12 @@
+FROM alpine as builder
+RUN apk update && apk add --no-cache ca-certificates
+RUN update-ca-certificates
+
+FROM scratch
+
+COPY bin/gdax .
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+ENTRYPOINT ["./gdax"]
+
+EXPOSE 2222
