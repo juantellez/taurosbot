@@ -71,8 +71,14 @@ for w in wallets:
 response = requests.post(
   url=BASE_URL + 'v2/auth/signin/',
   headers={'Content-Type': 'application/json'},
-  data=json.dumps({'email': TAU_EMAIL, 'password': TAU_PWD}),
+  data=json.dumps({
+    'email': TAU_EMAIL,
+    'password': TAU_PWD,
+    'device_name': "Bot",
+    'unique_device_id': "f8c8a829-c1fa-405f-b9e3-0d50c7d2b9f0",
+  }),
 )
+
 print(response.json()) #todo: process invalid login credencials
 jwtToken = response.json()['payload']['token']
 
@@ -101,7 +107,7 @@ def on_message(data):
         from_bal = data['object']['right_coin']
       print('NEW TRADE')
       print('coin %s balance %f' % (from_bal, balances[from_bal]['available']))
-      print('coin %s balance %f' % (to_bal, balances[to_bal]['available']))
+      print('coin %s balance %f' % (to_bal, blances[to_bal]['available']))
       print('received=%f paid=% f from %s to %s' % (received,paid,from_bal,to_bal))
       balances[from_bal]['available'] -= paid
       balances[to_bal]['available'] += received

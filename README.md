@@ -1,20 +1,21 @@
 ## Requisites
 1. api token from Tauros
 2. api token from openexchangerates.org
-3. Go 
+3. Go version 1.11.x
 4. Docker and Docker Compose
 5. Linux environment although it could run in Windows too, but I haven't tested it.
 6. Protobuf v3.5 installed with go plugins:
 ```bash
 wget https://github.com/google/protobuf/releases/download/v3.5.1/protoc-3.5.1-linux-x86_64.zip
-sudo unzip protoc-3.5.1-linux-x86_64.zip -d /usr/local/ 
+sudo mkdir /usr/local/protobuf
+sudo unzip -j protoc-3.5.1-linux-x86_64.zip -d /usr/local/protobuf
 sudo chmod -R 755 /usr/local/protobuf
 export PATH=$PATH:/usr/local/protobuf/bin 
 go get -u github.com/golang/protobuf/proto
 go get -u github.com/golang/protobuf/protoc-gen-go
 ```
 7. Python >3.6 (needed for socket.io to get notification of new trades and deposits) in the bal folder is the README to setup python. Soon Tauros will update its websocket service using native sockets instead of socket.io. I will then remove the python code and implement a golang version of this service.
-## steps to run
+## steps to runeval
 ```
 Create a bots directory to have the bots and credentials json files, and copy the files to the docker volume, before running.
 # 
