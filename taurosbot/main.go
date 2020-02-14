@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	logger "log"
+
 	pb "git.vmo.mx/Tauros/tradingbot/proto"
 	"github.com/shopspring/decimal"
 	log "github.com/sirupsen/logrus"
@@ -51,14 +53,14 @@ type bot struct {
 
 type credentials struct {
 	Tauros struct {
-		Token string `json:"token"`
+		Token        string `json:"token"`
 		TestingToken string `json:"testing_token"`
-		Email string `json:"email"`
-		Password string `json:"password"`
-		Websocket string `json:"websocket"`
-		BaseAPIUrl string `json:"base_api_url"`
-		BalService string `json:"bal_service"`
-		BalPort string `json:"bal_port"`
+		Email        string `json:"email"`
+		Password     string `json:"password"`
+		Websocket    string `json:"websocket"`
+		BaseAPIUrl   string `json:"base_api_url"`
+		BalService   string `json:"bal_service"`
+		BalPort      string `json:"bal_port"`
 	} `json:"tauros"`
 	OpenExchangeRates struct {
 		Token string `json:"token"`
@@ -67,6 +69,9 @@ type credentials struct {
 		APIToken string `json:"api_token"`
 	} `json:"gdax"`
 }
+
+var orderLogFile *os.File
+var orderLog *logger.Logger
 
 // bots configuration loaded from file
 var bots struct {
@@ -137,7 +142,7 @@ func loadCredentialsFile(filename string) {
 	log.Infof("Using credentials file: %s", filename)
 	var creds credentials
 	in, err := ioutil.ReadFile(filename)
-	if err!= nil {
+	if err != nil {
 		log.Fatalf("Unable to load credentials file: %v", err)
 	}
 	if err := json.Unmarshal(in, &creds); err != nil {
@@ -203,45 +208,45 @@ func getBalances() (buyBal, sellBal float64) {
 	if err != nil {
 		log.Fatalf("Unable to get balances from balances grpc service: %v", err)
 	}
-	sellAvailable, err:=strconv.ParseFloat(res.Left.Available, 64)
-	if err!= nil {
+	sellAvailable, err := strconv.ParseFloat(res.Left.Available, 64)
+	if err != nil {
 		log.Fatalf("Bad Left.Available, unable to convert %s to float64: %v", res.Left.Available, err)
 	}
 	sellFrozen, err := strconv.ParseFloat(res.Left.Frozen, 64)
-	if err!= nil {
+	if err != nil {
 		log.Fatalf("Bad Left.Frozen, unable to convert %s to float64: %v", res.Left.Frozen, err)
 	}
 	buyAvailable, err := strconv.ParseFloat(res.Right.Available, 64)
-	if err!= nil {
+	if err != nil {
 		log.Fatalf("Bad Right.Available, unable to convert %s to float64: %v", res.Right.Available, err)
 	}
 	buyFrozen, err := strconv.ParseFloat(res.Right.Frozen, 64)
-	if err!= nil {
+	if err != nil {
 		log.Fatalf("Bad Right.Frozen, unable to convert %s to float64: %v", res.Right.Frozen, err)
 	}
 	//log.Infof("grpcBal result - buyAvailable=%f buyFrozen=%f, sellAvailable=%f sellFrozen=%f",buyAvailable,buyFrozen,sellAvailable,sellFrozen)
-	return buyAvailable+buyFrozen, sellAvailable+sellFrozen //todo: this result should come from the grpc service itself
+	return buyAvailable + buyFrozen, sellAvailable + sellFrozen //todo: this result should come from the grpc service itself
 }
 
 func updateBalances() {
 	buyAvailable, sellAvailable := getBalances()
 	if marketData.currentExchangeRate == 0.0 {
-			log.Fatalf("Update Balances -> Current Exchange Rate cannot be zero")
+		log.Fatalf("Update Balances -> Current Exchange Rate cannot be zero")
 	}
 	maxBid, minAsk := getGdaxTicker()
 	price, _ := decimal.Avg(maxBid, minAsk).Float64()
-	buyAvailable = buyAvailable/ (price * marketData.currentExchangeRate)
+	buyAvailable = buyAvailable / (price * marketData.currentExchangeRate)
 	marketData.imbalance = 0.5
 	if sellAvailable > 0.0 {
-		marketData.imbalance = buyAvailable*bots.BuyPct / (buyAvailable*bots.BuyPct + sellAvailable*bots.SellPct)
+		marketData.imbalance = buyAvailable * bots.BuyPct / (buyAvailable*bots.BuyPct + sellAvailable*bots.SellPct)
 	}
 	if marketData.buyBalance != buyAvailable*bots.BuyPct {
 		log.Infof("Old buyBalance: %f, New buybalance: %f", marketData.buyBalance, buyAvailable*bots.BuyPct)
-		marketData.buyBalance = buyAvailable*bots.BuyPct
+		marketData.buyBalance = buyAvailable * bots.BuyPct
 	}
 	if marketData.sellBalance != sellAvailable*bots.SellPct {
-		log.Infof("Old sellbalance: %f, new sellbalance: %f", marketData.sellBalance,sellAvailable*bots.SellPct)
-		marketData.sellBalance = sellAvailable*bots.SellPct
+		log.Infof("Old sellbalance: %f, new sellbalance: %f", marketData.sellBalance, sellAvailable*bots.SellPct)
+		marketData.sellBalance = sellAvailable * bots.SellPct
 	}
 }
 
@@ -249,23 +254,26 @@ func addOrder(orderID int64, amount string, side string, price string) int64 {
 	var err error
 	myOrders.Lock()
 	defer myOrders.Unlock()
-	o := fmt.Sprintf("side=%s price=%s amount=%s orderID=%d", side, price, amount, orderID)
+
+	o := fmt.Sprintf("%s s=%s p=%s a=%s ID=%d", time.Now().Format("2006-01-02 15:04:05"), side, price, amount, orderID)
 
 	//check order parameters
-	log.Tracef("Adding order side=%s price=%s amount=%s orderID=%d", side, price, amount, orderID)
+	log.Tracef("Adding order %s", o)
 	a, _ := strconv.ParseFloat(amount, 64)
-	if a<=0.0 { 
-		log.Errorf("Cannot place an order with amount 0 or negative: %s"+o)
+	if a <= 0.0 {
+		log.Errorf("Cannot place an order with amount 0 or negative: %s", o)
 		return orderID
 	}
 	p, _ := strconv.ParseFloat(price, 64)
-	if p<=0.0 {
-		log.Errorf("Cannot place an order with price 0 or negative: %s"+o)
+	if p <= 0.0 {
+		log.Errorf("Cannot place an order with price 0 or negative: %s", o)
+		return orderID
 	}
-	if (p*a<=5.0) && (sellSide=="mxn")  { //todo: get minimum amount order from Tauros API
-		log.Warnf("Cannot place an order of less than $5 pesos: %s"+o)
-  }
-	
+	if p*a < 5.0 { //&& (sellSide=="mxn")  { //todo: get minimum amount order from Tauros API
+		log.Warnf("Cannot place an order of less than $5 pesos: %s", o)
+		return orderID
+	}
+
 	//check if this order is already posted
 	for _, o := range myOrders.orders {
 		if o.Price == price && o.Side == side && o.Amount == amount {
@@ -287,8 +295,8 @@ func addOrder(orderID int64, amount string, side string, price string) int64 {
 	//delete old bot order in current orderbooks before adding a new one
 	if orderID != 0 && myOrders.orders[orderID] != nil {
 		delete(myOrders.orders, orderID)
-		if err:=tau.CloseOrder(orderID); err != nil {
-			log.Errorf("Unable to delete previous bot order #%d, %v, %s", orderID,err,o)
+		if err := tau.CloseOrder(orderID); err != nil {
+			log.Errorf("Unable to delete previous bot order #%d, %v, %s", orderID, err, o)
 			//this can happen if a trade was filled.
 		}
 	}
@@ -301,8 +309,9 @@ func addOrder(orderID int64, amount string, side string, price string) int64 {
 		Price:  price,
 	})
 	if err != nil {
-		log.Fatalf("Unable to place new order %s: %v buyBalance=%f, sellBalance=%f",o,err,marketData.buyBalance,marketData.sellBalance)
+		log.Errorf("Unable to place new order %s: %v buyBalance=%f, sellBalance=%f", o, err, marketData.buyBalance, marketData.sellBalance)
 	}
+	orderLog.Println(o)
 	//keep track of all orders made
 	myOrders.orders[orderID] = &myOrder{
 		Side:   side,
@@ -328,14 +337,14 @@ func runBot(b bot) {
 			marketData.RLock()
 			updateBalances()
 			if b.Side == "buy" {
-				available = marketData.buyBalance 
+				available = marketData.buyBalance
 				if available > 0.0 {
 					price = getDepthPrice("buy", b.Spread) * marketData.currentExchangeRate * (1 - (bots.Spread * marketData.imbalance))
 					orderAmount = fmt.Sprintf("%.8f", available*b.Pct)
 					orderSide = "buy"
 					orderPrice = fmt.Sprintf("%.8f", price)
 				} else {
-					log.Warn("no balance available for buying %s",buySide)
+					log.Warn("no balance available for buying %s", buySide)
 				}
 			} else {
 				available = marketData.sellBalance
@@ -345,7 +354,7 @@ func runBot(b bot) {
 					orderSide = "sell"
 					orderPrice = fmt.Sprintf("%.8f", price)
 				} else {
-					log.Warn("no balance available for selling %s",sellSide)
+					log.Warn("no balance available for selling %s", sellSide)
 				}
 			}
 			marketData.RUnlock()
@@ -372,6 +381,7 @@ type logFormatter struct {
 	TimestampFormat string
 	LevelDesc       []string
 }
+
 func (f *logFormatter) Format(entry *log.Entry) ([]byte, error) {
 	timestamp := fmt.Sprintf(entry.Time.Format(f.TimestampFormat))
 	return []byte(fmt.Sprintf("%s %s %s\n", f.LevelDesc[entry.Level], timestamp, entry.Message)), nil
@@ -381,12 +391,16 @@ func main() {
 	flag.Parse()
 	logFormatter := new(logFormatter)
 	logFormatter.TimestampFormat = "2006-01-02 15:04:05"
-	logFormatter.LevelDesc = []string{"PANIC", "FATAL", "ERROR", "WARNI", "INFOR", "DEBUG","TRACE"}
+	logFormatter.LevelDesc = []string{"PANIC", "FATAL", "ERROR", "WARNI", "INFOR", "DEBUG", "TRACE"}
 	log.SetFormatter(logFormatter)
 	myOrders.orders = make(map[int64]*myOrder)
 
 	loadBotsFile(flag.Arg(0))
 	loadCredentialsFile(flag.Arg(1))
+
+	// orders log file. Todo: use logrus instead of log library. Todo: periodically rotate logs
+	orderLogFile, _ = os.Create("/bots/" + bots.Market + "-orders.log")
+	orderLog = logger.New(orderLogFile, "", 0)
 
 	log.Info("Subscribing to gdax service at gdax:2222")
 	grpcGdaxConn, err := grpc.Dial("gdax:2222", grpc.WithInsecure())
@@ -405,10 +419,10 @@ func main() {
 	defer grpcOxConn.Close() //probably not needed
 	getOxRate = pb.NewOxServiceClient(grpcOxConn)
 
-	log.Info("subscribing to balance service at "+balService+":"+balPort)
+	log.Info("subscribing to balance service at " + balService + ":" + balPort)
 	grpcBalConn, err := grpc.Dial(balService+":"+balPort, grpc.WithInsecure())
 	if err != nil {
-		log.Fatalf("Unable to connect to Bal grpc service at localhost:%s",balPort)
+		log.Fatalf("Unable to connect to Bal grpc service at localhost:%s", balPort)
 	}
 	getTauBalances = pb.NewBalancesServiceClient(grpcBalConn)
 
@@ -418,7 +432,7 @@ func main() {
 	} else {
 		log.SetLevel(loglevel)
 	}
-	log.Infof("Testing: %t TestingToken: %s TaurosToken: %s",bots.Testing,bots.TestingToken,bots.TaurosToken)
+	log.Infof("Testing: %t TestingToken: %s TaurosToken: %s", bots.Testing, bots.TestingToken, bots.TaurosToken)
 	if bots.Testing {
 		tau.Init(true, bots.TestingToken)
 	} else {
@@ -473,7 +487,7 @@ func main() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 	log.Warnf("SIGTERM received, ending Tauros trading bots...")
-//	log.SetLevel(log.TraceLevel)
+	//	log.SetLevel(log.TraceLevel)
 	for i := range bots.Bots {
 		wg.Add(1)
 		log.Infof("quitting bot %d", i)

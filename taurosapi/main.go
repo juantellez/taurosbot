@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"time"
 	"strings"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -264,11 +264,11 @@ func doTauRequest(version int, reqType string, tauService string, message *Messa
 	}
 	if !respJSON.Success {
 		msg := string(respJSON.Message)
-		if msg=="" {
-			msg=string(body)
+		if msg == "" {
+			msg = string(body)
 		}
 		if strings.Contains(msg, "Invalid token") {
-			msg+=" Token="+apiToken
+			msg += " Token=" + apiToken
 		}
 		return nil, fmt.Errorf("doTauRequest-> Unsuccess message %s", msg)
 	}
