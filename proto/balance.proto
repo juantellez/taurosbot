@@ -9,7 +9,6 @@ message BalancesRequest {
 message Balance {
   string Currency = 1;
   string Available = 2;
-  string Frozen = 3;
 }
 
 message Balances {
