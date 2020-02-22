@@ -35,6 +35,46 @@ type TauWsObject struct {
 	Value          string `json:"value"`
 }
 
+// TauWebHookObject - Taures Webhook message "object"
+type TauWebHookObject struct {
+	Market          string `json:"market"`
+	Side            string `json:"side"`
+	InitialAmount   string `json:"initial_amount"`
+	Filled          string `json:"filled"`
+	Value           string `json:"value"`
+	InitialValue    string `json:"initial_value"`
+	Price           string `json:"price"`
+	FeeDecimal      string `json:"fee_decimal"` //todo: issue to correct too much data and overlapping names
+	FeePercent      string `json:"fee_percent"`
+	FeeAmountPaid   string `json:"fee_amount_paid"`
+	IsOpen          bool   `json:"is_open"`
+	AmountPaid      string `json:"amount_paid"`
+	AmountReceived  string `json:"amount_received"`
+	CreatedAt       string `json:"created_at"`
+	ClosedAt        string `json:"closed_at"`
+	LeftCoin        string `json:"left_coin"`
+	RightCoin       string `json:"right_coin"`
+	LeftCoinIcon    string `json:"left_coin_icon"`
+	RightCoinIcon   string `json:"right_coin_icon"`
+	Sender          string `json:"sender"`
+	Receiver        string `json:"receiver"`
+	Coin            string `json:"coin"`
+	CoinName        string `json:"coin_name"`
+	CoinIcon        string `json:"coin_icon"`
+	Amount          string `json:"amount"`
+	TxID            string `json:"txId"` //todo: github issue correcting json format to "tx_id"
+	Confirmed       bool   `json:"confirmed"`
+	ConfirmedAt     string `json:"confirmed_at"`
+	IsInnerTransfer bool   `json:"is_innerTransfer"` //todo: issue to correct json name to is_inner_transfer
+	Address         string `json:"address"`
+	ExplorerLink    string `json:"explorer_link"`
+	FeeAmount       string `json:"fee_amount"`
+	TotalAmount     string `json:"total_amount"`
+	Type            string `json:"type"`
+	Description     string `json:"description"`
+	ID              int64  `json:"id"`
+}
+
 // TauWsMessage - Tauros Websocket message header
 type TauWsMessage struct {
 	Title       string      `json:"title"`
@@ -42,6 +82,15 @@ type TauWsMessage struct {
 	Type        string      `json:"type"`
 	Date        string      `json:"date"`
 	Object      TauWsObject `json:"object"`
+}
+
+// TauWebHookMessage - Tauros POST message received via webhooks
+type TauWebHookMessage struct { //todo: unify this with TauWsMessage
+	Title       string           `json:"title"`
+	Description string           `json:"description"`
+	Type        string           `json:"type"`
+	Date        string           `json:"date"`
+	Object      TauWebHookObject `json:"object"`
 }
 
 // Message - main message struct
