@@ -139,9 +139,43 @@ type Balance struct {
 	} `json:"balances"`
 }
 
+// Webhook - data of a Webhook
+type Webhook struct {
+	ID                   int64  `json:"id"`
+	Name                 string `json:"name"`
+	Endpoint             string `json:"endpoint"`
+	NotifyDeposit        bool   `json:"notify_deposit"`
+	NotifyWithdrawal     bool   `json:"notify_withdrawal"`
+	NotifyOrderPlaced    bool   `json:"notify_order_place"`
+	NotifyOrderFilled    bool   `json:"notify order_filled"`
+	NotifyTrade          bool   `json:"notify_trade"`
+	AuthorizationHeader  string `json:"authorization_header"`
+	AuthorizationContent string `json:"authorization_content"`
+	IsActive             bool   `json:"is_active"`
+	CreatedAt            string `json:"created_at"`
+	UpdatedAt            string `json:"updated_at"`
+}
+
 var apiURL = "https://api.tauros.io"
 
 var apiToken string
+
+// GetWebhooks - get all the registered webhooks
+func GetWebhooks() (webhooks []Webhook, error error) {
+	var w = []Webhook{}
+	var d struct {
+		Count    int64     `json:"count"`
+		Webhooks []Webhook `json:"results"`
+	}
+	jsonData, err := doTauRequest(2, "GET", "webhooks/webhooks", nil)
+	if err != nil {
+		return w, err
+	}
+	if err := json.Unmarshal(jsonData, &d); err != nil {
+		return w, err
+	}
+	return d.Webhooks, nil
+}
 
 // GetCoins - get all available coins handled by the exchange
 func GetCoins() (coins []Coin, error error) {
