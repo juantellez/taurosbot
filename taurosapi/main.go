@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -161,13 +162,13 @@ var apiURL = "https://api.tauros.io"
 var apiToken string
 
 // GetWebhooks - get all the registered webhooks
-func GetWebhooks() (webhooks []Webhook, error error) {
+func GetWebhooks(apiToken string) (webhooks []Webhook, error error) {
 	var w = []Webhook{}
 	var d struct {
 		Count    int64     `json:"count"`
 		Webhooks []Webhook `json:"results"`
 	}
-	jsonData, err := doTauRequest(2, "GET", "webhooks/webhooks", nil)
+	jsonData, err := doTauRequest(2, "GET", "webhooks/webhooks", apiToken, nil)
 	if err != nil {
 		return w, err
 	}
@@ -177,13 +178,53 @@ func GetWebhooks() (webhooks []Webhook, error error) {
 	return d.Webhooks, nil
 }
 
+// CreateWebhook - add a webhook
+func CreateWebhook(webhook Webhook, apiToken string) (ID int64, error error) {
+	jsonPostMsg, _ := json.Marshal(&webhook)
+	jsonData, err := doTauRequest(2, "POST", "webhooks/webhooks/", apiToken, jsonPostMsg)
+	if err != nil {
+		return 0, nil
+	}
+	var d struct {
+		ID int64 `json:"id"`
+	}
+	log.Printf("jsonData=%s", string(jsonData))
+	if err := json.Unmarshal(jsonData, &d); err != nil {
+		return 0, fmt.Errorf("CreateWebhook -> unmarshal jsonData %v", err)
+	}
+	return d.ID, nil
+}
+
+// DeleteWebhook - delete one webhook according to the webhook ID
+func DeleteWebhook(ID int64, apiToken string) error {
+	//note extra backslash at the end. This is not normal. Fix when endpoint is fixed at the backend (issue 507 at github)
+	_, err := doTauRequest(2, "DELETE", "webhooks/webhooks/"+strconv.FormatInt(ID, 10)+"/", apiToken, nil)
+	return err
+}
+
+// DeleteWebhooks - delete all currently registered webhooks
+func DeleteWebhooks(apiToken string) (error error) {
+	webhooks, err := GetWebhooks(apiToken)
+	if err != nil {
+		return err
+	}
+	for _, w := range webhooks {
+		log.Printf("deleting webhook %d", w.ID)
+		err := DeleteWebhook(w.ID, apiToken)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // GetCoins - get all available coins handled by the exchange
 func GetCoins() (coins []Coin, error error) {
 	var c = []Coin{}
 	var d struct {
 		Crypto []Coin `json:"crypto"`
 	}
-	jsonData, err := doTauRequest(1, "GET", "data/coins", nil)
+	jsonData, err := doTauRequest(1, "GET", "data/coins", apiToken, nil)
 	if err != nil {
 		return c, err
 	}
@@ -194,12 +235,12 @@ func GetCoins() (coins []Coin, error error) {
 }
 
 // GetBalances - get available balances of the user
-func GetBalances() (balances []Balance, error error) {
+func GetBalances(apiToken string) (balances []Balance, error error) {
 	var b []Balance
 	var w struct {
 		Wallets []Balance `json:"wallets"`
 	}
-	jsonData, err := doTauRequest(1, "GET", "data/listbalances", nil)
+	jsonData, err := doTauRequest(1, "GET", "data/listbalances", apiToken, nil)
 	if err != nil {
 		return b, err
 	}
@@ -210,8 +251,8 @@ func GetBalances() (balances []Balance, error error) {
 }
 
 // GetDepositAddress - get the deposit address of the user for the specified coin
-func GetDepositAddress(coin string) (address string, error error) {
-	jsonData, err := doTauRequest(1, "GET", "data/getdepositaddress?coin="+coin, nil)
+func GetDepositAddress(coin string, apiToken string) (address string, error error) {
+	jsonData, err := doTauRequest(1, "GET", "data/getdepositaddress?coin="+coin, apiToken, nil)
 	if err != nil {
 		return "", fmt.Errorf("TauDepositAddress-> %v", err)
 	}
@@ -226,8 +267,9 @@ func GetDepositAddress(coin string) (address string, error error) {
 }
 
 // PlaceOrder - add a new order
-func PlaceOrder(order Message) (orderID int64, error error) {
-	jsonData, err := doTauRequest(1, "POST", "trading/placeorder/", &order)
+func PlaceOrder(order Message, apiToken string) (orderID int64, error error) {
+	jsonPostMsg, _ := json.Marshal(&order)
+	jsonData, err := doTauRequest(1, "POST", "trading/placeorder/", apiToken, jsonPostMsg)
 	if err != nil {
 		return 0, fmt.Errorf("PlaceOrder-> %v", err)
 	}
@@ -236,7 +278,7 @@ func PlaceOrder(order Message) (orderID int64, error error) {
 	}
 	//log.Tracef("jsonData=%s", string(jsonData))
 	if err := json.Unmarshal(jsonData, &d); err != nil {
-		return 0, fmt.Errorf("PlaceOrder-> unmarshaling jsonData %v", err)
+		return 0, fmt.Errorf("PlaceOrder-> unmarshal jsonData %v", err)
 	}
 	//d.ID = rand.Int63n(10000000)
 	log.Tracef("tauapi: add order %d", d.ID)
@@ -244,8 +286,8 @@ func PlaceOrder(order Message) (orderID int64, error error) {
 }
 
 // GetOpenOrders - get all open orders by the user
-func GetOpenOrders() (orders []Order, error error) {
-	jsonData, err := doTauRequest(1, "GET", "trading/myopenorders/", nil)
+func GetOpenOrders(apiToken string) (orders []Order, error error) {
+	jsonData, err := doTauRequest(1, "GET", "trading/myopenorders/", apiToken, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetOpenOrders->%v", err)
 	}
@@ -257,14 +299,14 @@ func GetOpenOrders() (orders []Order, error error) {
 }
 
 // CloseAllOrders - close all currently open orders
-func CloseAllOrders() error {
+func CloseAllOrders(apiToken string) error {
 	log.Info("closing all orders...")
-	orders, err := GetOpenOrders()
+	orders, err := GetOpenOrders(apiToken)
 	if err != nil {
 		return fmt.Errorf("CloseAllOrders ->%v", err)
 	}
 	for _, o := range orders {
-		if err := CloseOrder(o.ID); err != nil {
+		if err := CloseOrder(o.ID, apiToken); err != nil {
 			return fmt.Errorf("CloseAllOrders Deleting Order %d ->%v", o.ID, err)
 		}
 	}
@@ -272,11 +314,10 @@ func CloseAllOrders() error {
 }
 
 // CloseOrder - close the order specified by the order ID
-func CloseOrder(orderID int64) error {
-	var m Message
-	m.ID = orderID
+func CloseOrder(orderID int64, apiToken string) error {
+	jsonPostMsg, _ := json.Marshal(&Message{ID: orderID})
 	log.Tracef("tauapi: del Order %d", orderID)
-	_, err := doTauRequest(1, "POST", "trading/closeorder/", &m)
+	_, err := doTauRequest(1, "POST", "trading/closeorder/", apiToken, jsonPostMsg)
 	if err != nil {
 		return fmt.Errorf("CloseOrder->%v", err)
 	}
@@ -285,10 +326,8 @@ func CloseOrder(orderID int64) error {
 
 // Login - simulate a login to get the jwt token
 func Login(email string, password string) (jwtToken string, err error) {
-	var m Message
-	m.Email = email
-	m.Password = password
-	jsonData, err := doTauRequest(2, "POST", "auth/signin/", &m)
+	jsonPostMsg, _ := json.Marshal(&Message{Email: email, Password: password})
+	jsonData, err := doTauRequest(2, "POST", "auth/signin/", "", jsonPostMsg)
 	if err != nil {
 		return "", fmt.Errorf("Login->%v", err)
 	}
@@ -302,28 +341,31 @@ func Login(email string, password string) (jwtToken string, err error) {
 	return d.Token, nil
 }
 
-func doTauRequest(version int, reqType string, tauService string, message *Message) (msgdata json.RawMessage, error error) {
-	jsonMsg, err := json.Marshal(message)
-	if err != nil {
-		return nil, fmt.Errorf("doTauRequest-> Error trying to json marshal tauMessage: %v", err)
-	}
-	log.Tracef("reqType: [%s], tauService: [%s] message: %+v", reqType, tauService, jsonMsg)
+func doTauRequest(version int, reqType string, tauService string, apiToken string, jsonPostMsg json.RawMessage) (msgdata json.RawMessage, e error) {
+	// jsonMsg, err := json.Marshal(message)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("doTauRequest-> Error trying to json marshal tauMessage: %v", err)
+	// }
+	//log.Printf("reqType: [%s], tauService: [%s] message: %+v", reqType, tauService, string(jsonPostMsg))
 	var httpReq *http.Request
-	var b []byte
-	if reqType != "GET" {
-		if b, err = json.Marshal(message); err != nil {
-			return nil, fmt.Errorf("doTauRequest-> Error on body marshal: %v", err)
-		}
-	}
-	log.Tracef("url=%s token=%s", apiURL+"/api/v1/"+tauService, apiToken)
+	var err error
+	//var b []byte
+	// if reqType == "POST" {
+	// 	if b, err = json.Marshal(message); err != nil {
+	// 		return nil, fmt.Errorf("doTauRequest-> Error on POST body marshal: %v", err)
+	// 	}
+	// }
 	apiVersion := fmt.Sprintf("v%1d", version)
-	httpReq, err = http.NewRequest(reqType, apiURL+"/api/"+apiVersion+"/"+tauService, bytes.NewBuffer(b))
+	log.Printf("%s %s %s", reqType, apiURL+"/api/"+apiVersion+"/"+tauService, string(jsonPostMsg))
+	httpReq, err = http.NewRequest(reqType, apiURL+"/api/"+apiVersion+"/"+tauService, bytes.NewBuffer(jsonPostMsg))
 	if err != nil {
 		return nil, fmt.Errorf("doTauRequest-> Error on http.NewRequest: %v", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-	httpReq.Header.Set("Authorization", "Token "+apiToken)
+	if apiToken != "" {
+		httpReq.Header.Set("Authorization", "Token "+apiToken)
+	}
 	client := http.Client{Timeout: time.Second * 10}
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -332,9 +374,12 @@ func doTauRequest(version int, reqType string, tauService string, message *Messa
 	defer resp.Body.Close()
 	//todo: check StatusCode
 	body, err := ioutil.ReadAll(resp.Body)
-	log.Tracef("resp body=%s", string(body))
+	log.Printf("resp body=%s", string(body))
 	if err != nil {
 		return nil, fmt.Errorf("doTauRequest-> Error ioutil body: %v", err)
+	}
+	if strings.Contains(tauService, "webhooks") { //needed because the webhook endpoints are missing this header
+		body = []byte(`{"success":true,"payload":` + string(body) + "}")
 	}
 	var respJSON struct {
 		Success bool            `json:"success"`
@@ -343,7 +388,7 @@ func doTauRequest(version int, reqType string, tauService string, message *Messa
 		Payload json.RawMessage `json:"payload"`
 	}
 	if err := json.Unmarshal(body, &respJSON); err != nil {
-		return nil, fmt.Errorf("doTauRequest-> Unmarshall error: %v", err)
+		return nil, fmt.Errorf("doTauRequest-> Unmarshal error: %v", err)
 	}
 	if !respJSON.Success {
 		msg := string(respJSON.Message)
@@ -362,9 +407,8 @@ func doTauRequest(version int, reqType string, tauService string, message *Messa
 }
 
 //Init start the tauros api
-func Init(testing bool, token string) {
+func Init(testing bool) {
 	if testing {
 		apiURL = "https://api.staging.tauros.io"
 	}
-	apiToken = token
 }
