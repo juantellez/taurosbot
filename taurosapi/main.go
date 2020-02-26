@@ -155,6 +155,7 @@ type Webhook struct {
 	IsActive             bool   `json:"is_active"`
 	CreatedAt            string `json:"created_at"`
 	UpdatedAt            string `json:"updated_at"`
+	Detail               string `json:"detail"`
 }
 
 var apiURL = "https://api.tauros.io"
@@ -167,6 +168,7 @@ func GetWebhooks(apiToken string) (webhooks []Webhook, error error) {
 	var d struct {
 		Count    int64     `json:"count"`
 		Webhooks []Webhook `json:"results"`
+		Detail   string    `json:"detail"`
 	}
 	jsonData, err := doTauRequest(2, "GET", "webhooks/webhooks", apiToken, nil)
 	if err != nil {
@@ -174,6 +176,9 @@ func GetWebhooks(apiToken string) (webhooks []Webhook, error error) {
 	}
 	if err := json.Unmarshal(jsonData, &d); err != nil {
 		return w, err
+	}
+	if d.Detail == "Invalid token." { //todo: really use http status code instead.
+		return w, fmt.Errorf("Tauros API: %s", d.Detail)
 	}
 	return d.Webhooks, nil
 }
@@ -188,7 +193,7 @@ func CreateWebhook(webhook Webhook, apiToken string) (ID int64, error error) {
 	var d struct {
 		ID int64 `json:"id"`
 	}
-	log.Printf("jsonData=%s", string(jsonData))
+	log.Tracef("jsonData=%s", string(jsonData))
 	if err := json.Unmarshal(jsonData, &d); err != nil {
 		return 0, fmt.Errorf("CreateWebhook -> unmarshal jsonData %v", err)
 	}
@@ -209,7 +214,7 @@ func DeleteWebhooks(apiToken string) (error error) {
 		return err
 	}
 	for _, w := range webhooks {
-		log.Printf("deleting webhook %d", w.ID)
+		log.Tracef("deleting webhook %d", w.ID)
 		err := DeleteWebhook(w.ID, apiToken)
 		if err != nil {
 			return err
@@ -341,23 +346,12 @@ func Login(email string, password string) (jwtToken string, err error) {
 	return d.Token, nil
 }
 
-func doTauRequest(version int, reqType string, tauService string, apiToken string, jsonPostMsg json.RawMessage) (msgdata json.RawMessage, e error) {
-	// jsonMsg, err := json.Marshal(message)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("doTauRequest-> Error trying to json marshal tauMessage: %v", err)
-	// }
-	//log.Printf("reqType: [%s], tauService: [%s] message: %+v", reqType, tauService, string(jsonPostMsg))
-	var httpReq *http.Request
-	var err error
-	//var b []byte
-	// if reqType == "POST" {
-	// 	if b, err = json.Marshal(message); err != nil {
-	// 		return nil, fmt.Errorf("doTauRequest-> Error on POST body marshal: %v", err)
-	// 	}
-	// }
+func doTauRequest(version int, reqType string, tauService string, apiToken string, jsonPostMsg json.RawMessage) (msgdata json.RawMessage, err error) {
+	//var httpReq *http.Request
+	//var err error
 	apiVersion := fmt.Sprintf("v%1d", version)
-	log.Printf("%s %s %s", reqType, apiURL+"/api/"+apiVersion+"/"+tauService, string(jsonPostMsg))
-	httpReq, err = http.NewRequest(reqType, apiURL+"/api/"+apiVersion+"/"+tauService, bytes.NewBuffer(jsonPostMsg))
+	log.Tracef("%s %s %s", reqType, apiURL+"/api/"+apiVersion+"/"+tauService, string(jsonPostMsg))
+	httpReq, err := http.NewRequest(reqType, apiURL+"/api/"+apiVersion+"/"+tauService, bytes.NewBuffer(jsonPostMsg))
 	if err != nil {
 		return nil, fmt.Errorf("doTauRequest-> Error on http.NewRequest: %v", err)
 	}
@@ -374,11 +368,14 @@ func doTauRequest(version int, reqType string, tauService string, apiToken strin
 	defer resp.Body.Close()
 	//todo: check StatusCode
 	body, err := ioutil.ReadAll(resp.Body)
-	log.Printf("resp body=%s", string(body))
+	log.Tracef("status code=%d resp body=%s", resp.StatusCode, string(body))
 	if err != nil {
 		return nil, fmt.Errorf("doTauRequest-> Error ioutil body: %v", err)
 	}
 	if strings.Contains(tauService, "webhooks") { //needed because the webhook endpoints are missing this header
+		if len(body) == 0 {
+			body = []byte("{}") //for spurious empty DELETE responses, what a nuisance
+		}
 		body = []byte(`{"success":true,"payload":` + string(body) + "}")
 	}
 	var respJSON struct {
@@ -388,7 +385,7 @@ func doTauRequest(version int, reqType string, tauService string, apiToken strin
 		Payload json.RawMessage `json:"payload"`
 	}
 	if err := json.Unmarshal(body, &respJSON); err != nil {
-		return nil, fmt.Errorf("doTauRequest-> Unmarshal error: %v", err)
+		return nil, fmt.Errorf("doTauRequest-> Unmarshal error: %v \n %s", err, string(body))
 	}
 	if !respJSON.Success {
 		msg := string(respJSON.Message)
@@ -411,4 +408,5 @@ func Init(testing bool) {
 	if testing {
 		apiURL = "https://api.staging.tauros.io"
 	}
+	log.Tracef("API url is: %s", apiURL)
 }
