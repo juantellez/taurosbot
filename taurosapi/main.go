@@ -38,42 +38,44 @@ type TauWsObject struct {
 
 // TauWebHookObject - Taures Webhook message "object"
 type TauWebHookObject struct {
-	Market          string `json:"market"`
-	Side            string `json:"side"`
-	InitialAmount   string `json:"initial_amount"`
-	Filled          string `json:"filled"`
-	Value           string `json:"value"`
-	InitialValue    string `json:"initial_value"`
-	Price           string `json:"price"`
-	FeeDecimal      string `json:"fee_decimal"` //todo: issue to correct too much data and overlapping names
-	FeePercent      string `json:"fee_percent"`
-	FeeAmountPaid   string `json:"fee_amount_paid"`
-	IsOpen          bool   `json:"is_open"`
-	AmountPaid      string `json:"amount_paid"`
-	AmountReceived  string `json:"amount_received"`
-	CreatedAt       string `json:"created_at"`
-	ClosedAt        string `json:"closed_at"`
-	LeftCoin        string `json:"left_coin"`
-	RightCoin       string `json:"right_coin"`
-	LeftCoinIcon    string `json:"left_coin_icon"`
-	RightCoinIcon   string `json:"right_coin_icon"`
-	Sender          string `json:"sender"`
-	Receiver        string `json:"receiver"`
-	Coin            string `json:"coin"`
-	CoinName        string `json:"coin_name"`
-	CoinIcon        string `json:"coin_icon"`
-	Amount          string `json:"amount"`
-	TxID            string `json:"txId"` //todo: github issue correcting json format to "tx_id"
-	Confirmed       bool   `json:"confirmed"`
-	ConfirmedAt     string `json:"confirmed_at"`
-	IsInnerTransfer bool   `json:"is_innerTransfer"` //todo: issue to correct json name to is_inner_transfer
-	Address         string `json:"address"`
-	ExplorerLink    string `json:"explorer_link"`
-	FeeAmount       string `json:"fee_amount"`
-	TotalAmount     string `json:"total_amount"`
-	Type            string `json:"type"`
-	Description     string `json:"description"`
-	ID              int64  `json:"id"`
+	Market              string `json:"market"`
+	Side                string `json:"side"`
+	InitialAmount       string `json:"initial_amount"`
+	Filled              string `json:"filled"`
+	Value               string `json:"value"`
+	InitialValue        string `json:"initial_value"`
+	Price               string `json:"price"`
+	FeeDecimal          string `json:"fee_decimal"` //todo: issue to correct too much data and overlapping names
+	FeePercent          string `json:"fee_percent"`
+	FeeAmountPaid       string `json:"fee_amount_paid"`
+	IsOpen              bool   `json:"is_open"`
+	AmountPaid          string `json:"amount_paid"`
+	AmountReceived      string `json:"amount_received"`
+	CreatedAt           string `json:"created_at"`
+	ClosedAt            string `json:"closed_at"`
+	LeftCoin            string `json:"left_coin"`
+	RightCoin           string `json:"right_coin"`
+	LeftCoinIcon        string `json:"left_coin_icon"`
+	RightCoinIcon       string `json:"right_coin_icon"`
+	Sender              string `json:"sender"`
+	Receiver            string `json:"receiver"`
+	Coin                string `json:"coin"`
+	CoinName            string `json:"coin_name"`
+	CoinIcon            string `json:"coin_icon"`
+	Amount              string `json:"amount"`
+	TxID                string `json:"txId"` //todo: github issue correcting json format to "tx_id"
+	Confirmed           bool   `json:"confirmed"`
+	ConfirmedAt         string `json:"confirmed_at"`
+	IsInnerTransfer     bool   `json:"is_innerTransfer"` //todo: issue to correct json name to is_inner_transfer
+	Address             string `json:"address"`
+	ExplorerLink        string `json:"explorer_link"`
+	FeeAmount           string `json:"fee_amount"`
+	TotalAmount         string `json:"total_amount"`
+	Type                string `json:"type"`
+	Description         string `json:"description"`
+	TradeAmountPaid     string `json:"trade_amount_paid"`     //the actual amounts of the trade
+	TradeAmountReceived string `json:"trade_amount_received"` // in order filled messages
+	ID                  int64  `json:"id"`
 }
 
 // TauWsMessage - Tauros Websocket message header
@@ -305,7 +307,6 @@ func GetOpenOrders(apiToken string) (orders []Order, error error) {
 
 // CloseAllOrders - close all currently open orders
 func CloseAllOrders(apiToken string) error {
-	log.Info("closing all orders...")
 	orders, err := GetOpenOrders(apiToken)
 	if err != nil {
 		return fmt.Errorf("CloseAllOrders ->%v", err)
