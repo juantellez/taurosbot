@@ -25,7 +25,8 @@ type Balances struct {
 	balance map[string]dec.Decimal
 }
 
-func (b *Balances) updateBalances(account string, coin string, amount string) {
+// bal.update - update the balance for coin with amount
+func (b *Balances) update(account string, coin string, amount string) {
 	log.Infof("updating balance of %s coin %s with amount %s", account, coin, amount)
 	key := account + coin
 	a, _ := dec.NewFromString(amount)
@@ -38,7 +39,8 @@ func (b *Balances) updateBalances(account string, coin string, amount string) {
 	}
 }
 
-func (b *Balances) listBalances() {
+// bal.list - output the balances to screen
+func (b *Balances) list() {
 	b.RLock()
 	defer b.RUnlock()
 	for k := range bal.balance {
@@ -64,6 +66,10 @@ type Bot struct {
 	Amount       string    `json:"amount"`        //current amount of this bot's order
 	ErrorMsg     string    `json:"error_message"` //last current error message
 	Active       bool      `json:"active"`        //is the bot active or not
+	MinInterval  int       `json:"min_interval"`  //mininum interval in ms before changing order
+	MaxInterval  int       `json:"max_interval"`  //maximum interval in ms before changing order
+	Bias         float32   `json:"bias"`          //how much should the price be biased toward buy <-> sell
+	MinVariance  float32   `json:"min_variance"`  //how much the price has to change before changing the order
 	Quit         chan bool // channel to notify the bot to quit
 }
 
@@ -74,17 +80,22 @@ type Bots struct {
 	bots   map[int64]*Bot
 }
 
+// bots.add(Bot) - add one bot and start it
 func (b *Bots) add(newBot Bot) {
+	newBot.ID = b.lastID
+	newBot.Quit = make(chan bool)
 	log.Infof("Adding bot %+v", newBot)
 	b.Lock()
-	defer b.Unlock()
-	newBot.ID = b.lastID
 	b.bots[b.lastID] = &newBot
-	if b.bots[b.lastID].Active {
-		go b.run(b.lastID)
-	}
 	b.lastID++
+	b.Unlock()
+	if newBot.Active {
+		wg.Add(1)
+		go b.run(newBot.ID, newBot.Quit)
+	}
 }
+
+// bots.delete(ID) - delete one bot
 func (b *Bots) delete(ID int64) {
 	log.Infof("deleting bot ID %d", ID)
 	b.Lock()
@@ -93,9 +104,39 @@ func (b *Bots) delete(ID int64) {
 	delete(b.bots, ID)
 }
 
-func (b *Bots) run(ID int64) {
+// bots.save - save all the bots to a json file.
+func (b *Bots) save() {
+	filename := "bots.json"
+	out, err := json.MarshalIndent(b, " ", " ")
+	if err != nil {
+		log.Fatalf("Unable to marshal bots to json: %v", err)
+	}
+	if err := ioutil.WriteFile(filename, out, 0644); err != nil {
+		log.Fatalf("Unable to save bots to file %s: %$v", filename, err)
+	}
+	log.Infof("bots saved to file %s", filename)
+}
+
+// bots.restore - restore all the bots from json file and start them
+func (b *Bots) restore() {
+	filename := "bots.json"
+	log.Infof("Restoring bots previously saved in %s", filename)
+	in, err := ioutil.ReadFile(filename)
+	if err != nil {
+		log.Fatalf("Unable to restore bots: %v", err)
+	}
+	if err := json.Unmarshal(in, &bots); err != nil {
+		log.Fatalf("Unable to unmarshall json file: %v", err)
+	}
+}
+
+func (b *Bots) run(ID int64, quit chan bool) {
 	log.Infof("starting running bot %d", ID)
-	ticker := time.NewTicker(time.Duration(2000+rand.Intn(2000)) * time.Millisecond)
+	b.RLock()
+	minInt := b.bots[ID].MinInterval
+	maxInt := b.bots[ID].MaxInterval
+	b.RUnlock()
+	ticker := time.NewTicker(time.Duration(minInt+rand.Intn(maxInt)) * time.Millisecond)
 	for {
 		select {
 		case <-ticker.C:
@@ -105,18 +146,19 @@ func (b *Bots) run(ID int64) {
 			// new order, check for changes goes here
 			b.bots[ID].Amount = fmt.Sprintf("%8.2f", rand.Float64())
 			if b.bots[ID].Active {
-				ticker = time.NewTicker(time.Duration(1000+rand.Intn(2000)) * time.Millisecond)
+				ticker = time.NewTicker(time.Duration(minInt+rand.Intn(maxInt)) * time.Millisecond)
 
 			}
 			b.Unlock()
-		case <-b.bots[ID].Quit: //not sure how to do this
+		case <-quit: //not sure if this is the correct way to do this
 			ticker.Stop()
 			log.Infof("Stopping bot ID %d", ID)
 			wg.Done()
 		}
 	}
 }
-func (b *Bots) stopBots() {
+func (b *Bots) stop() {
+	// save anyway here?
 	for _, b := range b.bots {
 		b.Quit <- true
 	}
@@ -183,25 +225,25 @@ func webhooksLink(w http.ResponseWriter, r *http.Request) {
 		log.Fatalf("received webhook of invalid account: [%s]", vars["apikey"])
 	}
 	log.Printf("Balances of %s BEFORE webhook %s:", account, whMessage.Type)
-	bal.listBalances()
+	bal.list()
 	switch whMessage.Type {
 	case "TR": // Deposit, Withdrawal, Transfer sent and received
 		prefix := "" //negative to subtract
 		if whMessage.Object.Type == "withdrawal" {
 			prefix = "-"
 		}
-		bal.updateBalances(account, whMessage.Object.Coin, prefix+whMessage.Object.TotalAmount)
+		bal.update(account, whMessage.Object.Coin, prefix+whMessage.Object.TotalAmount)
 	case "OF": //market maker order fill (trade) executed
-		bal.updateBalances(account, whMessage.Object.LeftCoin, whMessage.Object.TradeAmountReceived)
-		bal.updateBalances(account, whMessage.Object.RightCoin, "-"+whMessage.Object.TradeAmountPaid)
+		bal.update(account, whMessage.Object.LeftCoin, whMessage.Object.TradeAmountReceived)
+		bal.update(account, whMessage.Object.RightCoin, "-"+whMessage.Object.TradeAmountPaid)
 	case "TD": //
-		bal.updateBalances(account, whMessage.Object.LeftCoin, whMessage.Object.AmountReceived)
-		bal.updateBalances(account, whMessage.Object.RightCoin, "-"+whMessage.Object.AmountPaid)
+		bal.update(account, whMessage.Object.LeftCoin, whMessage.Object.AmountReceived)
+		bal.update(account, whMessage.Object.RightCoin, "-"+whMessage.Object.AmountPaid)
 	default:
 		log.Errorf("Unknown webhook message type: %s", whMessage.Type)
 	}
 	log.Print("balances AFTER webhook:")
-	bal.listBalances()
+	bal.list()
 }
 
 func pingLink(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +295,7 @@ func main() {
 		} else {
 			for _, w := range wallets {
 				log.Tracef("Balance of %s:%s = %s", t.Account, w.Coin, string(w.Balances.Available))
-				bal.updateBalances(t.Account, w.Coin, string(w.Balances.Available))
+				bal.update(t.Account, w.Coin, string(w.Balances.Available))
 			}
 		}
 
@@ -290,30 +332,36 @@ func main() {
 	router.HandleFunc("/bot/pause/{botid}", getBotPauseLink).Methods("GET")
 
 	bots.add(Bot{
-		Account: "david@montebit.com",
-		Market:  "BTC-MXN",
-		Side:    "sell",
-		Spread:  40,
-		Amount:  "999.99",
-		Quit:    make(chan bool, 1),
-		Active:  true,
+		Account:     "david@montebit.com",
+		Market:      "BTC-MXN",
+		Side:        "sell",
+		Spread:      40,
+		Amount:      "999.99",
+		MinInterval: 1500,
+		MaxInterval: 2500,
+		MinVariance: 0.01,
+		Active:      true,
 	})
 
 	bots.add(Bot{
-		Account: "bot@tauros.io",
-		Market:  "BTC-MXN",
-		Side:    "buy",
-		Spread:  100,
-		Amount:  "1111.1111",
-		Quit:    make(chan bool, 1),
-		Active:  true,
+		Account:     "bot@tauros.io",
+		Market:      "BTC-MXN",
+		Side:        "buy",
+		Spread:      100,
+		Amount:      "1111.1111",
+		MinInterval: 10000,
+		MaxInterval: 20000,
+		Bias:        0.0,
+		MinVariance: 0.01,
+		Active:      true,
 	})
 
 	c := make(chan os.Signal, 2)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 	log.Warnf("SIGTERM received, ending tauros trading bots...")
-	bots.stopBots()
+	bots.save()
+	bots.stop()
 
 	//	log.Print("Ready to receive POST requests at port 9090")
 	//	log.Fatal(http.ListenAndServe(":9090", router))

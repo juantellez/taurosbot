@@ -1,6 +1,7 @@
 module git.vmo.mx/Tauros/tradingbot
 
 require (
+	github.com/gogo/protobuf v1.3.1 // indirect
 	github.com/golang/protobuf v1.3.2
 	github.com/gorilla/mux v1.7.4
 	github.com/gorilla/websocket v1.4.1
