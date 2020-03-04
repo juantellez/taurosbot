@@ -1,6 +1,7 @@
 package main // balances - maintain tauros balances
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -14,7 +15,6 @@ import (
 	"time"
 
 	tau "git.vmo.mx/Tauros/tradingbot/taurosapi"
-	"github.com/gorilla/mux"
 	dec "github.com/shopspring/decimal"
 	log "github.com/sirupsen/logrus"
 )
@@ -70,7 +70,7 @@ type Bot struct {
 	MaxInterval  int       `json:"max_interval"`  //maximum interval in ms before changing order
 	Bias         float32   `json:"bias"`          //how much should the price be biased toward buy <-> sell
 	MinVariance  float32   `json:"min_variance"`  //how much the price has to change before changing the order
-	Quit         chan bool // channel to notify the bot to quit
+	Quit         chan bool `json:"-"`             // channel to notify the bot to quit
 }
 
 // Bots - type
@@ -81,11 +81,11 @@ type Bots struct {
 }
 
 // bots.add(Bot) - add one bot and start it
-func (b *Bots) add(newBot Bot) {
+func (b *Bots) add(newBot Bot) int64 {
+	b.Lock()
 	newBot.ID = b.lastID
 	newBot.Quit = make(chan bool)
 	log.Infof("Adding bot %+v", newBot)
-	b.Lock()
 	b.bots[b.lastID] = &newBot
 	b.lastID++
 	b.Unlock()
@@ -93,6 +93,7 @@ func (b *Bots) add(newBot Bot) {
 		wg.Add(1)
 		go b.run(newBot.ID, newBot.Quit)
 	}
+	return newBot.ID
 }
 
 // bots.delete(ID) - delete one bot
@@ -105,28 +106,56 @@ func (b *Bots) delete(ID int64) {
 }
 
 // bots.save - save all the bots to a json file.
-func (b *Bots) save() {
+func (b Bots) save() {
+	var bots []Bot
 	filename := "bots.json"
-	out, err := json.MarshalIndent(b, " ", " ")
+	b.RLock()
+	defer b.RUnlock()
+	for _, b := range b.bots {
+		bots = append(bots, *b)
+	}
+	json, err := json.MarshalIndent(bots, " ", " ")
 	if err != nil {
 		log.Fatalf("Unable to marshal bots to json: %v", err)
 	}
-	if err := ioutil.WriteFile(filename, out, 0644); err != nil {
+	if err := ioutil.WriteFile(filename, json, 0644); err != nil {
 		log.Fatalf("Unable to save bots to file %s: %$v", filename, err)
 	}
 	log.Infof("bots saved to file %s", filename)
 }
 
+func (b Bots) list() {
+	b.RLock()
+	defer b.RUnlock()
+	var s string
+	for _, b := range b.bots {
+		json, _ := json.MarshalIndent(b, "  ", "  ")
+		s = s + "\n" + string(json)
+	}
+	if s == "" {
+		s = "No bots are loaded..."
+	}
+	log.Printf("%s \n lastID=%d", s, b.lastID)
+}
+
 // bots.restore - restore all the bots from json file and start them
 func (b *Bots) restore() {
+	var bots []Bot
 	filename := "bots.json"
 	log.Infof("Restoring bots previously saved in %s", filename)
 	in, err := ioutil.ReadFile(filename)
 	if err != nil {
-		log.Fatalf("Unable to restore bots: %v", err)
+		log.Warnf("no bots.json file found, starting afresh with no saved bots")
+		return
 	}
 	if err := json.Unmarshal(in, &bots); err != nil {
-		log.Fatalf("Unable to unmarshall json file: %v", err)
+		log.Infof("Bad bots.json file: %v, starting afresh with no saved bots")
+		return
+	}
+	log.Infof("loading bots: %+v", bots)
+	for _, newBot := range bots {
+		log.Infof("adding bot %+v", newBot)
+		b.add(newBot)
 	}
 }
 
@@ -162,6 +191,7 @@ func (b *Bots) stop() {
 	for _, b := range b.bots {
 		b.Quit <- true
 	}
+	wg.Wait()
 }
 
 var bots = &Bots{new(sync.RWMutex), 0, make(map[int64]*Bot)}
@@ -179,12 +209,9 @@ type credentials struct {
 	BaseWebhookURL         string     `json:"base_webhook_url"`
 }
 
-type grpcServer struct{}
-
 var apiTokens []apiToken
 var isStaging bool
 var baseWebhookURL string
-var lastBotID int64
 
 func loadCredentialsFile(filename string) {
 	log.Infof("Using credentials file: %s", filename)
@@ -200,64 +227,6 @@ func loadCredentialsFile(filename string) {
 	apiTokens = creds.APITokens
 	baseWebhookURL = creds.BaseWebhookURL
 }
-
-func webhooksLink(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	reqBody, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		log.Errorf("Error: %v", err)
-	}
-	log.Infof("Req Body = %s", string(reqBody))
-	var whMessage tau.TauWebHookMessage
-	if err := json.Unmarshal(reqBody, &whMessage); err != nil {
-		log.Errorf("Error unmarshal json req body from webhook: %v", err)
-	}
-	log.Tracef("Received webhook from %s Description: %s", vars["apikey"], whMessage.Description)
-	var account string
-	//find account
-	for _, t := range apiTokens {
-		if t.APIToken[4:10] == vars["apikey"] {
-			account = t.Account
-			break
-		}
-	}
-	if account == "" {
-		log.Fatalf("received webhook of invalid account: [%s]", vars["apikey"])
-	}
-	log.Printf("Balances of %s BEFORE webhook %s:", account, whMessage.Type)
-	bal.list()
-	switch whMessage.Type {
-	case "TR": // Deposit, Withdrawal, Transfer sent and received
-		prefix := "" //negative to subtract
-		if whMessage.Object.Type == "withdrawal" {
-			prefix = "-"
-		}
-		bal.update(account, whMessage.Object.Coin, prefix+whMessage.Object.TotalAmount)
-	case "OF": //market maker order fill (trade) executed
-		bal.update(account, whMessage.Object.LeftCoin, whMessage.Object.TradeAmountReceived)
-		bal.update(account, whMessage.Object.RightCoin, "-"+whMessage.Object.TradeAmountPaid)
-	case "TD": //
-		bal.update(account, whMessage.Object.LeftCoin, whMessage.Object.AmountReceived)
-		bal.update(account, whMessage.Object.RightCoin, "-"+whMessage.Object.AmountPaid)
-	default:
-		log.Errorf("Unknown webhook message type: %s", whMessage.Type)
-	}
-	log.Print("balances AFTER webhook:")
-	bal.list()
-}
-
-func pingLink(w http.ResponseWriter, r *http.Request) {
-	//return {succeess: true, message: "ok!", data: null}
-}
-
-func getBotLink(w http.ResponseWriter, r *http.Request)      {}
-func deleteBotLink(w http.ResponseWriter, r *http.Request)   {}
-func postBotLink(w http.ResponseWriter, r *http.Request)     {}
-func putBotLink(w http.ResponseWriter, r *http.Request)      {}
-func getBotsLink(w http.ResponseWriter, r *http.Request)     {}
-func getBalancesLink(w http.ResponseWriter, r *http.Request) {}
-func getTickersLink(w http.ResponseWriter, r *http.Request)  {}
-func getBotPauseLink(w http.ResponseWriter, r *http.Request) {}
 
 //todo put logFormatter in lib
 type logFormatter struct {
@@ -319,52 +288,26 @@ func main() {
 			log.Printf("Created webhook with id %d", webhookID)
 		}
 	}
-	router := mux.NewRouter().StrictSlash(true)
-	router.HandleFunc("/webhooks/{apikey}", webhooksLink).Methods("POST")
-	router.HandleFunc("/ping", pingLink).Methods("GET")
-	router.HandleFunc("/bot/{botid}", getBotLink).Methods("GET")
-	router.HandleFunc("/bot/{botid}", deleteBotLink).Methods("DELETE")
-	router.HandleFunc("/bot", postBotLink).Methods("POST")
-	router.HandleFunc("/bot/{botid}", putBotLink).Methods("PUT")
-	router.HandleFunc("/bots", getBotsLink).Methods("GET")
-	router.HandleFunc("/balances", getBalancesLink).Methods("GET")
-	router.HandleFunc("/tickers", getTickersLink).Methods("GET")
-	router.HandleFunc("/bot/pause/{botid}", getBotPauseLink).Methods("GET")
 
-	bots.add(Bot{
-		Account:     "david@montebit.com",
-		Market:      "BTC-MXN",
-		Side:        "sell",
-		Spread:      40,
-		Amount:      "999.99",
-		MinInterval: 1500,
-		MaxInterval: 2500,
-		MinVariance: 0.01,
-		Active:      true,
-	})
-
-	bots.add(Bot{
-		Account:     "bot@tauros.io",
-		Market:      "BTC-MXN",
-		Side:        "buy",
-		Spread:      100,
-		Amount:      "1111.1111",
-		MinInterval: 10000,
-		MaxInterval: 20000,
-		Bias:        0.0,
-		MinVariance: 0.01,
-		Active:      true,
-	})
-
+	bots.restore()
+	bots.list()
+	srv := &http.Server{
+		Addr:         "0.0.0.0:9090",
+		WriteTimeout: time.Second * 15,
+		ReadTimeout:  time.Second * 15,
+		IdleTimeout:  time.Second * 60,
+	}
+	startRouter(srv)
 	c := make(chan os.Signal, 2)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 	log.Warnf("SIGTERM received, ending tauros trading bots...")
-	bots.save()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	defer cancel()
+	log.Infof("shutting down http server")
+	srv.Shutdown(ctx)
 	bots.stop()
-
-	//	log.Print("Ready to receive POST requests at port 9090")
-	//	log.Fatal(http.ListenAndServe(":9090", router))
+	bots.save()
 }
 
 /*
