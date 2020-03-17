@@ -27,21 +27,18 @@ type rate struct {
 	} `json:"rates"`
 }
 
-type credentials struct { //todo: put in lib
-	Tauros struct {
-		Token string `json:"token"`
-		TestingToken string `json:"testing_token"`
-		Email string `json:"email"`
-		Password string `json:"password"`
-		Websocket string `json:"websocket"`
-		BaseAPIUrl string `json:"base_api_url` 
-	} `json:"tauros"`
-	OpenExchangeRates struct {
-		Token string `json:"token"`
-	} `json:"openexchangerates"`
-	Gdax struct {
-		APIToken string `json:"api_token"`
-	} `json:"gdax"`
+//todo put apiToken and credentials types in lib
+type apiToken struct {
+	Account  string `json:"account"`
+	APIToken string `json:"api_token"`
+}
+
+type credentials struct {
+	IsStaging              bool       `json:"is_staging"`
+	APITokens              []apiToken `json:"tauros_tokens"`
+	OpenexchangeratesToken string     `json:"openexchangerates_token"`
+	GdaxToken              string     `json:"gdax_token"`
+	BaseWebhookURL         string     `json:"base_webhook_url"`
 }
 
 type grpcServer struct{}
@@ -55,13 +52,13 @@ func loadCredentialsFile(filename string) {
 	log.Infof("Using credentials file: %s", filename)
 	var creds credentials
 	in, err := ioutil.ReadFile(filename)
-	if err!= nil {
+	if err != nil {
 		log.Fatalf("Unable to load credentials file: %v", err)
 	}
 	if err := json.Unmarshal(in, &creds); err != nil {
 		log.Fatalf("Unable to unmarshal json file: %v", err)
 	}
-	oxToken = creds.OpenExchangeRates.Token
+	oxToken = creds.OpenexchangeratesToken
 }
 
 func (*grpcServer) GetOxRate(ctx context.Context, req *pb.OxRequest) (*pb.OxRate, error) {
@@ -123,6 +120,7 @@ type logFormatter struct {
 	TimestampFormat string
 	LevelDesc       []string
 }
+
 func (f *logFormatter) Format(entry *log.Entry) ([]byte, error) {
 	timestamp := fmt.Sprintf(entry.Time.Format(f.TimestampFormat))
 	return []byte(fmt.Sprintf("%s %s %s\n", f.LevelDesc[entry.Level], timestamp, entry.Message)), nil
@@ -133,7 +131,7 @@ func main() {
 
 	logFormatter := new(logFormatter)
 	logFormatter.TimestampFormat = "2006-01-02 15:04:05"
-	logFormatter.LevelDesc = []string{"PANIC", "FATAL", "ERROR", "WARNI", "INFOR", "DEBUG","TRACE"}
+	logFormatter.LevelDesc = []string{"PANIC", "FATAL", "ERROR", "WARNI", "INFOR", "DEBUG", "TRACE"}
 	log.SetFormatter(logFormatter)
 
 	loadCredentialsFile(flag.Arg(0))

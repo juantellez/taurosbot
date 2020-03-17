@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ var grpcOxConn *grpc.ClientConn
 var getTicker = pb.NewTickerServiceClient(grpcGdaxConn)
 var getSpreadPrice = pb.NewSpreadPriceServiceClient(grpcGdaxConn)
 var getOxRate = pb.NewOxServiceClient(grpcOxConn)
+var coins = []string{}
 
 // ExchangeRate - keeps the current exchange rate
 type ExchangeRate struct {
@@ -74,7 +76,7 @@ func exchangeRater(quit chan bool, interval time.Duration) {
 			exchangeRate.set(getMXNRate())
 		case <-quit:
 			ticker.Stop()
-			log.Info("stopping exchangrater")
+			log.Info("stopping exchange rate service")
 			wg.Done()
 		}
 	}
@@ -86,7 +88,7 @@ type Balances struct {
 	balance map[string]dec.Decimal
 }
 
-// bal.update - update the balance for coin with amount
+// bal.update - update the balance of account for coin with amount
 func (b *Balances) update(account string, coin string, amount string) {
 	log.Infof("updating balance of %s coin %s with amount %s", account, coin, amount)
 	key := account + coin
@@ -110,6 +112,32 @@ func (b *Balances) list() {
 	log.Print("============================")
 }
 
+//bal.json() - return json of all balances
+func (b *Balances) json() []byte {
+	b.RLock()
+	defer b.RUnlock()
+	type bal struct {
+		Coin   string `json:"coin"`
+		Amount string `json:"amount"`
+	}
+	type acc struct {
+		Account  string `json:"account"`
+		Balances []bal  `json:"balances"`
+	}
+	var jsonBalances []acc
+	for _, a := range apiTokens {
+		//log.Printf("account=%s", a)
+		var b1 []bal
+		for _, c := range coins {
+			b1 = append(b1, bal{c, b.balance[a.Account+c].String()})
+		}
+		jsonBalances = append(jsonBalances, acc{a.Account, b1})
+	}
+	//log.Printf("jsonBalances=%+v", jsonBalances)
+	j, _ := json.MarshalIndent(jsonBalances, "   ", " ")
+	return j
+}
+
 func (b Balances) available(account string, coin string) dec.Decimal {
 	b.RLock()
 	defer b.RUnlock()
@@ -124,8 +152,8 @@ type Bot struct {
 	ID           int64     `json:"id"`
 	Account      string    `json:"account"`
 	Market       string    `json:"market"`
-	Side         string    `json:"json"` //"buy" or "sell"
-	TickerSource string    `json:"ticker_source"`
+	Side         string    `json:"side"`          //"buy" or "sell"
+	TickerSource string    `json:"ticker_source"` //not yet used, normally "gdax"
 	Spread       int64     `json:"spread"`
 	Pct          float64   `json:"pct"`           //percentage of total available balance destined for orders.
 	OrderID      int64     `json:"order_id"`      //current order id placed by this bot
@@ -140,6 +168,17 @@ type Bot struct {
 	Quit         chan bool `json:"-"`             // channel to notify the bot to quit
 }
 
+// BotUpdate - parts of the bot that can be updated on the fly, otherwise delete the bot and add new
+type BotUpdate struct {
+	ID          int64   `json:"id"` //required
+	Spread      int64   `json:"spread"`
+	Pct         float64 `json:"pct"`
+	MinInterval int     `json:"min_interval"`
+	MaxInterval int     `json:"max_interval"`
+	Bias        float64 `json:"bias"`
+	MinVariance float64 `json:"min_variance"`
+}
+
 // Bots - type
 type Bots struct {
 	*sync.RWMutex
@@ -152,7 +191,7 @@ func (b *Bots) add(newBot Bot) int64 {
 	b.Lock()
 	newBot.ID = b.lastID
 	newBot.Quit = make(chan bool)
-	// log.Infof("Adding bot %+v", newBot)
+	log.Infof("Adding bot %+v", newBot)
 	b.bots[b.lastID] = &newBot
 	b.lastID++
 	b.Unlock()
@@ -170,6 +209,21 @@ func (b *Bots) delete(ID int64) {
 	defer b.Unlock()
 	b.bots[ID].Quit <- true
 	delete(b.bots, ID)
+}
+
+// bots.getJSON(ID) returns json of bot ID
+func (b *Bots) getJSON(ID int64) []byte {
+	b.RLock()
+	defer b.RUnlock()
+	j, _ := json.MarshalIndent(b.bots[ID], "   ", " ")
+	return j
+}
+
+func (b *Bots) getJSONAll() []byte {
+	b.RLock()
+	defer b.RUnlock()
+	j, _ := json.MarshalIndent(b.bots, "   ", " ")
+	return j
 }
 
 // bots.deactivate(ID) - deactivate one bot
@@ -191,6 +245,35 @@ func (b Bots) activate(ID int64) {
 	go b.run(ID, b.bots[ID].Quit) //not sure if this will work due to mutex not yet unlocked
 }
 
+func (b Bots) update(botUpdate BotUpdate) (err error) {
+	b.Lock()
+	defer b.Unlock()
+	_, exists := b.bots[botUpdate.ID]
+	if !exists {
+		return fmt.Errorf("bot.update error, bot ID %d not found", botUpdate.ID)
+	}
+	//todo: check if reflect is better?
+	if botUpdate.Spread > 0.0 {
+		b.bots[botUpdate.ID].Spread = botUpdate.Spread
+	}
+	if botUpdate.Pct > 0.0 {
+		b.bots[botUpdate.ID].Pct = botUpdate.Pct
+	}
+	if botUpdate.MinInterval > 0 {
+		b.bots[botUpdate.ID].MinInterval = botUpdate.MinInterval
+	}
+	if botUpdate.MaxInterval > 0 {
+		b.bots[botUpdate.ID].MaxInterval = botUpdate.MaxInterval
+	}
+	if botUpdate.Bias > 0.0 {
+		b.bots[botUpdate.ID].Bias = botUpdate.Bias
+	}
+	if botUpdate.MinVariance > 0.0 {
+		b.bots[botUpdate.ID].MinVariance = botUpdate.MinVariance
+	}
+	return nil
+}
+
 // bots.save - save all the bots to a json file.
 func (b Bots) save() {
 	var bots []Bot
@@ -210,6 +293,7 @@ func (b Bots) save() {
 	log.Infof("bots saved to file %s", filename)
 }
 
+// bots.list list to log output
 func (b Bots) list() {
 	b.RLock()
 	defer b.RUnlock()
@@ -329,7 +413,9 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 func (b *Bots) stop() {
 	b.RLock()
 	for _, b := range b.bots {
-		b.Quit <- true
+		if b.Active {
+			b.Quit <- true
+		}
 	}
 	b.RUnlock()
 }
@@ -414,6 +500,16 @@ func main() {
 	go exchangeRater(quitExchangeRater, time.Duration(5)*time.Minute)
 
 	tau.Init(isStaging)
+
+	// get a list of supported coins and sort it
+	if c, err := tau.GetCoins(); err != nil {
+		log.Fatalf("Unable to get available coins")
+	} else {
+		for _, coin := range c {
+			coins = append(coins, coin.Coin)
+		}
+	}
+	sort.Strings(coins)
 
 	//get balances, remove all orders, remove current webhooks and add new webhooks
 	for _, t := range apiTokens {

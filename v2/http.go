@@ -2,19 +2,32 @@ package main // bot - http related parts
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 
 	tau "git.vmo.mx/Tauros/tradingbot/taurosapi"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
 
+func respJSON(w http.ResponseWriter, success bool, message string, data string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(fmt.Sprintf(`{
+  "success":"%t",
+  "message":"%s",
+  "data":"%s"
+}`, success, message, data)))
+}
+
 func webhooksLink(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
+	log.Info("POST /webhooks/%s", vars["apikey"])
 	reqBody, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		log.Errorf("Error: %v", err)
+		return //todo: return 50x
 	}
 	log.Infof("Req Body = %s", string(reqBody))
 	var whMessage tau.TauWebHookMessage
@@ -56,30 +69,110 @@ func webhooksLink(w http.ResponseWriter, r *http.Request) {
 }
 
 func pingLink(w http.ResponseWriter, r *http.Request) {
-	//return {succeess: true, message: "ok!", data: null}
+	log.Info("GET /ping")
+	respJSON(w, true, "ok!", "")
 }
 
-func getBotLink(w http.ResponseWriter, r *http.Request)      {}
-func deleteBotLink(w http.ResponseWriter, r *http.Request)   {}
-func postBotLink(w http.ResponseWriter, r *http.Request)     {}
-func putBotLink(w http.ResponseWriter, r *http.Request)      {}
-func getBotsLink(w http.ResponseWriter, r *http.Request)     {}
-func getBalancesLink(w http.ResponseWriter, r *http.Request) {}
-func getTickersLink(w http.ResponseWriter, r *http.Request)  {}
-func getBotPauseLink(w http.ResponseWriter, r *http.Request) {}
+func getBalancesLink(w http.ResponseWriter, r *http.Request) {
+	log.Info("GET /balances")
+	respJSON(w, true, "ok!", string(bal.json()))
+}
+
+func getBotLink(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	varsBotID := vars["botid"]
+	log.Infof("GET /bot/%s", varsBotID)
+	botID, err := strconv.ParseInt(varsBotID, 10, 64)
+	if err != nil {
+		respJSON(w, false, "Unable to parse integer: "+varsBotID, "")
+		return
+	}
+	botJSON := string(bots.getJSON(botID))
+	if botJSON == "null" {
+		respJSON(w, false, "bot id "+varsBotID+" not found", "")
+		return
+	}
+	respJSON(w, true, "ok!", botJSON)
+}
+
+func deleteBotLink(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	varsBotID := vars["botid"]
+	log.Infof("DELETE /bot/%s", varsBotID)
+	botID, err := strconv.ParseInt(varsBotID, 10, 64)
+	if err != nil {
+		respJSON(w, false, "unable to parse integer: "+varsBotID, "")
+		return
+	}
+	bots.delete(botID) //todo check if exists?
+	respJSON(w, true, "ok!", "")
+}
+
+func postBotLink(w http.ResponseWriter, r *http.Request) {
+	log.Info("POST /bot")
+	reqBody, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		log.Errorf("Error: %v", err)
+		return //todo return http status 50x
+	}
+	//todo: check for valid bot data
+	var newbot Bot
+	if err := json.Unmarshal(reqBody, &newbot); err != nil {
+		log.Errorf("Error unmarshal json req body to bot: %v", err)
+		return //todo: return http error
+	}
+	botID := bots.add(newbot)
+	respJSON(w, true, "ok!", fmt.Sprintf(`{"id":"%d"}`, botID))
+}
+
+func putBotLink(w http.ResponseWriter, r *http.Request) {
+	log.Info("PUT /bot")
+	reqBody, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		log.Errorf("Error: %v", err)
+		return //todo return http status error
+	}
+	var botUpdate BotUpdate
+	if err := json.Unmarshal(reqBody, &botUpdate); err != nil {
+		log.Errorf("Error unmarshal json req body to updateBot: %v", err)
+		return //todo send failed
+	}
+	if err := bots.update(botUpdate); err != nil {
+		log.Errorf("Unable to update bot %v", err)
+		return
+	}
+	respJSON(w, true, "ok!", "")
+}
+
+func getBotsLink(w http.ResponseWriter, r *http.Request) {
+	log.Info("GET /bots")
+	botsJSON := string(bots.getJSONAll())
+	respJSON(w, true, "ok!", botsJSON)
+}
+
+func getTickersLink(w http.ResponseWriter, r *http.Request) {
+
+}
+func getBotPauseLink(w http.ResponseWriter, r *http.Request) {
+	log.Info("GET /bot/pause")
+}
+func getBotUnpauseLink(w http.ResponseWriter, r *http.Request) {}
 
 func startRouter(srv *http.Server) {
 	router := mux.NewRouter().StrictSlash(true)
-	router.HandleFunc("/webhooks/{apikey}", webhooksLink).Methods("POST")
-	router.HandleFunc("/ping", pingLink).Methods("GET")
-	router.HandleFunc("/bot/{botid}", getBotLink).Methods("GET")
-	router.HandleFunc("/bot/{botid}", deleteBotLink).Methods("DELETE")
-	router.HandleFunc("/bot", postBotLink).Methods("POST")
-	router.HandleFunc("/bot/{botid}", putBotLink).Methods("PUT")
-	router.HandleFunc("/bots", getBotsLink).Methods("GET")
+	router.HandleFunc("/webhooks/{apikey}", webhooksLink).Methods("POST") //update balances
+	router.HandleFunc("/ping", pingLink).Methods("GET")                   //ping service
+	router.HandleFunc("/bot/{botid}", getBotLink).Methods("GET")          //get bot data
+	router.HandleFunc("/bot/{botid}", deleteBotLink).Methods("DELETE")    //delete bot
+	router.HandleFunc("/bot", postBotLink).Methods("POST")                //add new bot
+	router.HandleFunc("/bot", putBotLink).Methods("PUT")                  //update bot data
 	router.HandleFunc("/balances", getBalancesLink).Methods("GET")
+	router.HandleFunc("/bots", getBotsLink).Methods("GET")
+
+	//todo:
 	router.HandleFunc("/tickers", getTickersLink).Methods("GET")
 	router.HandleFunc("/bot/pause/{botid}", getBotPauseLink).Methods("GET")
+	router.HandleFunc("/bot/unpause/{botid}", getBotUnpauseLink).Methods("GET")
 
 	srv.Handler = router
 	go func() {
