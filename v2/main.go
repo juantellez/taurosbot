@@ -82,6 +82,105 @@ func exchangeRater(quit chan bool, interval time.Duration) {
 	}
 }
 
+// Order - an order placed in the exchange
+type Order struct {
+	ID     int64       `json:"id"`
+	Market string      `json:"market"`
+	Side   string      `json:"side"`
+	Price  dec.Decimal `json:"price"`
+	Amount dec.Decimal `json:"amount"`
+}
+
+// Orders - all the current orders placed in the exchange
+type Orders struct {
+	*sync.RWMutex
+	Order map[int64]Order
+}
+
+var orders = &Orders{new(sync.RWMutex), make(map[int64]Order)}
+
+func (o *Orders) add(market string, side string, price string, amount string) int64 {
+	o.Lock()
+	defer o.Unlock()
+	p, _ := dec.NewFromString(price)
+	a, _ := dec.NewFromString(amount)
+	orderInfo := fmt.Sprintf("%s s:%4s p:%s a:%s", time.Now().Format("2006-01-02 15:04:05"), side, price, amount)
+	orderID, err := tau.PlaceOrder(tau.Message{
+		Market: market,
+		Amount: amount,
+		Side:   side,
+		Type:   "limit",
+		Price:  price,
+	}, tautoken)
+	if err != nil {
+		log.Errorf("Unable to place new order %s: %v", orderInfo, err)
+		return 0
+	}
+	o.Order[orderID] = *&Order{
+		ID:     orderID,
+		Market: market,
+		Side:   side,
+		Price:  p,
+		Amount: a,
+	}
+	return orderID
+}
+
+// SortOrders - slice to sort the orders to find min bids and max asks made in the exchange
+type SortOrders []Order
+
+// Orders.json - get json of currently placed orders
+func (o *Orders) json() []byte {
+	o.RLock()
+	defer o.RUnlock()
+	var so SortOrders
+	for _, o := range o.Order {
+		so = append(so, o)
+	}
+	b, _ := json.MarshalIndent(so, "   ", " ")
+	return b
+}
+
+func (o *Orders) delete(id int64) {
+	o.Lock()
+	delete(o.Order, id)
+	o.Unlock()
+}
+
+func (o *Orders) list() {
+	o.RLock()
+	defer o.RUnlock()
+	for id, o := range o.Order {
+		log.Printf("ID %d: m: %s s: %s p: %s a: %s", id, o.Market, o.Side, o.Price, o.Amount)
+	}
+}
+
+// Orders.sort() returns slice of all orders of one market and side ordered by price
+func (o *Orders) sort(market, side string) SortOrders {
+	o.RLock()
+	defer o.RUnlock()
+	var so SortOrders
+	for _, o := range o.Order {
+		if o.Market == market && o.Side == side {
+			so = append(so, o)
+		}
+	}
+	sort.Slice(so, func(i, j int) bool {
+		if side == "sell" { //sort ascending
+			return so[i].Price.LessThan(so[j].Price)
+		} //sort descending
+		return so[i].Price.GreaterThan(so[j].Price)
+	})
+	return so
+}
+
+func (o *Orders) getLowestBid(market, side string) Order {
+	o.RLock()
+	defer o.RUnlock()
+	orders := o.sort(market, "sell")
+	return orders[0]
+}
+
 // Balances - type
 type Balances struct {
 	*sync.RWMutex
@@ -227,22 +326,30 @@ func (b *Bots) getJSONAll() []byte {
 }
 
 // bots.deactivate(ID) - deactivate one bot
-func (b Bots) deactivate(ID int64) {
+func (b Bots) deactivate(ID int64) error {
 	log.Infof("deactivating bot ID %d", ID)
 	b.Lock()
 	defer b.Unlock()
+	if _, exists := b.bots[ID]; !exists {
+		return fmt.Errorf("unable to deactivate bot with ID %d: bot not found", ID)
+	}
 	b.bots[ID].Quit <- true
 	b.bots[ID].Active = false
+	return nil
 }
 
 // bots.activate(ID) - activate one bot
-func (b Bots) activate(ID int64) {
+func (b Bots) activate(ID int64) error {
 	log.Infof("activating bot ID %d", ID)
 	b.Lock()
 	defer b.Unlock()
+	if _, exists := b.bots[ID]; !exists {
+		return fmt.Errorf("unable to activate bot with ID %d: bot not found", ID)
+	}
 	b.bots[ID].Active = true
 	wg.Add(1)
 	go b.run(ID, b.bots[ID].Quit) //not sure if this will work due to mutex not yet unlocked
+	return nil
 }
 
 func (b Bots) update(botUpdate BotUpdate) (err error) {
@@ -398,8 +505,30 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 			if sellSide == "MXN" {
 				price = price * exchangeRate.get()
 			}
+			price = price * (1 + bot.Bias)
 			bot.Price = fmt.Sprintf("%.8f", price)
-			log.Infof("Bot %d order M=%s S=%s A=%s P=%s", bot.ID, bot.Market, bot.Side, bot.Amount, bot.Price)
+			orders.delete(bot.OrderID)
+			bot.OrderID = rand.Int63n(1000000)
+			log.Infof("Bot %7d orderID %d M=%s S=%4s A=%s P=%s", bot.ID, bot.OrderID, bot.Market, bot.Side, bot.Amount, bot.Price)
+			//check for self trade:
+			if bot.Side == "sell" {
+				ords := orders.sort(bot.Market, "buy")
+				sellPrice, _ := dec.NewFromString(bot.Price)
+				for _, o := range ords {
+					if o.Price.GreaterThanOrEqual(sellPrice) {
+						//delete order o.ID
+					}
+				}
+			} else {
+				ords := orders.sort(bot.Market, "sell")
+				buyPrice, _ := dec.NewFromString(bot.Price)
+				for _, o := range ords {
+					if o.Price.LessThanOrEqual(buyPrice) {
+						//delete order o.ID
+					}
+				}
+			}
+			orders.add(bot.OrderID, bot.Market, bot.Side, bot.Price, bot.Amount)
 			b.bots[ID] = bot
 			b.Unlock()
 			ticker = time.NewTicker(time.Duration(minInt+rand.Intn(maxInt)) * time.Millisecond)
@@ -435,7 +564,7 @@ type credentials struct {
 	BaseWebhookURL         string     `json:"base_webhook_url"`
 }
 
-var apiTokens []apiToken
+var apiTokens []apiToken //todo make map with mutex
 var isStaging bool
 var baseWebhookURL string
 

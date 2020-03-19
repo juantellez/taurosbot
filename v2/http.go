@@ -115,7 +115,7 @@ func postBotLink(w http.ResponseWriter, r *http.Request) {
 		log.Errorf("Error: %v", err)
 		return //todo return http status 50x
 	}
-	//todo: check for valid bot data
+	//todo: check for valid bot data: valid account, valid market, positive spread, pct, etc
 	var newbot Bot
 	if err := json.Unmarshal(reqBody, &newbot); err != nil {
 		log.Errorf("Error unmarshal json req body to bot: %v", err)
@@ -132,6 +132,7 @@ func putBotLink(w http.ResponseWriter, r *http.Request) {
 		log.Errorf("Error: %v", err)
 		return //todo return http status error
 	}
+	//todo: do basic parameter checks
 	var botUpdate BotUpdate
 	if err := json.Unmarshal(reqBody, &botUpdate); err != nil {
 		log.Errorf("Error unmarshal json req body to updateBot: %v", err)
@@ -151,12 +152,41 @@ func getBotsLink(w http.ResponseWriter, r *http.Request) {
 }
 
 func getTickersLink(w http.ResponseWriter, r *http.Request) {
+	//todo
+}
 
-}
 func getBotPauseLink(w http.ResponseWriter, r *http.Request) {
-	log.Info("GET /bot/pause")
+	varsBotID := mux.Vars(r)["botid"]
+	log.Infof("GET /bot/pause/%s", varsBotID)
+	botID, err := strconv.ParseInt(varsBotID, 10, 64)
+	if err != nil {
+		respJSON(w, false, "unable to parse integer: "+varsBotID, "")
+	}
+	if err := bots.deactivate(botID); err != nil {
+		respJSON(w, false, err.Error(), "")
+		return
+	}
+	respJSON(w, true, "ok!", "")
 }
-func getBotUnpauseLink(w http.ResponseWriter, r *http.Request) {}
+
+func getBotUnpauseLink(w http.ResponseWriter, r *http.Request) {
+	varsBotID := mux.Vars(r)["botid"]
+	log.Infof("GET /bot/unpause/%s", varsBotID)
+	botID, err := strconv.ParseInt(varsBotID, 10, 64)
+	if err != nil {
+		respJSON(w, false, "unable to parse integer: "+varsBotID, "")
+	}
+	if err := bots.activate(botID); err != nil {
+		respJSON(w, false, err.Error(), "")
+		return
+	}
+	respJSON(w, true, "ok!", "")
+}
+func getOrdersLink(w http.ResponseWriter, r *http.Request) {
+	log.Info(" GET /orders")
+	ordersJSON := string(orders.json())
+	respJSON(w, true, "ok!", ordersJSON)
+}
 
 func startRouter(srv *http.Server) {
 	router := mux.NewRouter().StrictSlash(true)
@@ -168,11 +198,12 @@ func startRouter(srv *http.Server) {
 	router.HandleFunc("/bot", putBotLink).Methods("PUT")                  //update bot data
 	router.HandleFunc("/balances", getBalancesLink).Methods("GET")
 	router.HandleFunc("/bots", getBotsLink).Methods("GET")
+	router.HandleFunc("/bot/pause/{botid}", getBotPauseLink).Methods("GET")
+	router.HandleFunc("/bot/unpause/{botid}", getBotUnpauseLink).Methods("GET")
+	router.HandleFunc("/orders", getOrdersLink).Methods("GET")
 
 	//todo:
 	router.HandleFunc("/tickers", getTickersLink).Methods("GET")
-	router.HandleFunc("/bot/pause/{botid}", getBotPauseLink).Methods("GET")
-	router.HandleFunc("/bot/unpause/{botid}", getBotUnpauseLink).Methods("GET")
 
 	srv.Handler = router
 	go func() {
