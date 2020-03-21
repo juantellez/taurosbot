@@ -23,28 +23,31 @@ func respJSON(w http.ResponseWriter, success bool, message string, data string) 
 
 func webhooksLink(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	log.Info("POST /webhooks/%s", vars["apikey"])
+	log.Infof("POST /webhooks/%s", vars["apikey"])
 	reqBody, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		log.Errorf("Error: %v", err)
 		return //todo: return 50x
 	}
-	log.Infof("Req Body = %s", string(reqBody))
+	//log.Infof("Req Body = %s", string(reqBody))
 	var whMessage tau.TauWebHookMessage
 	if err := json.Unmarshal(reqBody, &whMessage); err != nil {
 		log.Errorf("Error unmarshal json req body from webhook: %v", err)
 	}
-	log.Tracef("Received webhook from %s Description: %s", vars["apikey"], whMessage.Description)
+	//log.Infof("Received webhook type %s Description: %s", whMessage.Type, whMessage.Description)
 	var account string
 	//find account
-	for _, t := range apiTokens {
-		if t.APIToken[4:10] == vars["apikey"] {
-			account = t.Account
+	for a, t := range apiTokens {
+		if t[4:10] == vars["apikey"] {
+			account = a
 			break
 		}
 	}
 	if account == "" {
 		log.Fatalf("received webhook of invalid account: [%s]", vars["apikey"])
+	}
+	if whMessage.Type == "OC" || whMessage.Type == "OP" {
+		return // ignore, bug from the service
 	}
 	log.Printf("Balances of %s BEFORE webhook %s:", account, whMessage.Type)
 	bal.list()

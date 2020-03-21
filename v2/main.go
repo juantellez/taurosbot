@@ -99,22 +99,22 @@ type Orders struct {
 
 var orders = &Orders{new(sync.RWMutex), make(map[int64]Order)}
 
-func (o *Orders) add(market string, side string, price string, amount string) int64 {
+func (o *Orders) add(market string, side string, price string, amount string, apiToken string) (int64, error) {
 	o.Lock()
 	defer o.Unlock()
 	p, _ := dec.NewFromString(price)
 	a, _ := dec.NewFromString(amount)
-	orderInfo := fmt.Sprintf("%s s:%4s p:%s a:%s", time.Now().Format("2006-01-02 15:04:05"), side, price, amount)
+	orderInfo := fmt.Sprintf("%s s:%4s p:%s a:%s token: %s", time.Now().Format("2006-01-02 15:04:05"), side, price, amount, apiToken)
 	orderID, err := tau.PlaceOrder(tau.Message{
 		Market: market,
 		Amount: amount,
 		Side:   side,
 		Type:   "limit",
 		Price:  price,
-	}, tautoken)
+	}, apiToken)
 	if err != nil {
 		log.Errorf("Unable to place new order %s: %v", orderInfo, err)
-		return 0
+		return 0, err
 	}
 	o.Order[orderID] = *&Order{
 		ID:     orderID,
@@ -123,7 +123,7 @@ func (o *Orders) add(market string, side string, price string, amount string) in
 		Price:  p,
 		Amount: a,
 	}
-	return orderID
+	return orderID, nil
 }
 
 // SortOrders - slice to sort the orders to find min bids and max asks made in the exchange
@@ -141,10 +141,14 @@ func (o *Orders) json() []byte {
 	return b
 }
 
-func (o *Orders) delete(id int64) {
+func (o *Orders) delete(id int64, apiToken string) error {
 	o.Lock()
+	defer o.Unlock()
+	if err := tau.CloseOrder(id, apiToken); err != nil {
+		return err
+	}
 	delete(o.Order, id)
-	o.Unlock()
+	return nil
 }
 
 func (o *Orders) list() {
@@ -224,13 +228,13 @@ func (b *Balances) json() []byte {
 		Balances []bal  `json:"balances"`
 	}
 	var jsonBalances []acc
-	for _, a := range apiTokens {
+	for a := range apiTokens {
 		//log.Printf("account=%s", a)
 		var b1 []bal
 		for _, c := range coins {
-			b1 = append(b1, bal{c, b.balance[a.Account+c].String()})
+			b1 = append(b1, bal{c, b.balance[a+c].String()})
 		}
-		jsonBalances = append(jsonBalances, acc{a.Account, b1})
+		jsonBalances = append(jsonBalances, acc{a, b1})
 	}
 	//log.Printf("jsonBalances=%+v", jsonBalances)
 	j, _ := json.MarshalIndent(jsonBalances, "   ", " ")
@@ -494,10 +498,14 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 			sellSide := m[1]
 			_, _, marketPrice := getGdaxTicker(bot.Market)
 			var available float64
+			var coin string
+			var err error
 			if bot.Side == "buy" {
 				available, _ = bal.available(bot.Account, sellSide).Div(marketPrice).Float64()
+				coin = buySide
 			} else {
 				available, _ = bal.available(bot.Account, buySide).Float64()
+				coin = sellSide
 			}
 			bot.Amount = fmt.Sprintf("%.8f", available*bot.Pct)
 			//todo: set bias according to available balances and bot.Bias
@@ -507,16 +515,23 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 			}
 			price = price * (1 + bot.Bias)
 			bot.Price = fmt.Sprintf("%.8f", price)
-			orders.delete(bot.OrderID)
-			bot.OrderID = rand.Int63n(1000000)
-			log.Infof("Bot %7d orderID %d M=%s S=%4s A=%s P=%s", bot.ID, bot.OrderID, bot.Market, bot.Side, bot.Amount, bot.Price)
+			if bot.OrderID != 0 {
+				if err := orders.delete(bot.OrderID, apiTokens[bot.Account]); err != nil {
+					bot.ErrorMsg = err.Error()
+					//todo: stop bot on error message?
+				}
+				bal.update(bot.Account, coin, bot.Amount)
+			}
+			log.Infof("Bot %2d available: %.2f M=%s S=%4s A=%s P=%s", bot.ID, available, bot.Market, bot.Side, bot.Amount, bot.Price)
 			//check for self trade:
-			if bot.Side == "sell" {
+			if bot.Side == "sell" { //todo: combine
 				ords := orders.sort(bot.Market, "buy")
 				sellPrice, _ := dec.NewFromString(bot.Price)
 				for _, o := range ords {
 					if o.Price.GreaterThanOrEqual(sellPrice) {
-						//delete order o.ID
+						if orders.delete(o.ID, apiTokens[bot.Account]); err != nil {
+							log.Errorf("Unable to delete self trade order %d: %v", o.ID, err) //todo: make fatal?
+						}
 					}
 				}
 			} else {
@@ -524,11 +539,18 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 				buyPrice, _ := dec.NewFromString(bot.Price)
 				for _, o := range ords {
 					if o.Price.LessThanOrEqual(buyPrice) {
-						//delete order o.ID
+						if orders.delete(o.ID, apiTokens[bot.Account]); err != nil {
+							log.Errorf("Unable to delete self trade order %d: %v", o.ID, err)
+						}
 					}
 				}
 			}
-			orders.add(bot.OrderID, bot.Market, bot.Side, bot.Price, bot.Amount)
+			bot.OrderID, err = orders.add(bot.Market, bot.Side, bot.Price, bot.Amount, apiTokens[bot.Account])
+			if err != nil {
+				bot.ErrorMsg = err.Error()
+			} else {
+				bal.update(bot.Account, coin, "-"+bot.Amount)
+			}
 			b.bots[ID] = bot
 			b.Unlock()
 			ticker = time.NewTicker(time.Duration(minInt+rand.Intn(maxInt)) * time.Millisecond)
@@ -564,7 +586,7 @@ type credentials struct {
 	BaseWebhookURL         string     `json:"base_webhook_url"`
 }
 
-var apiTokens []apiToken //todo make map with mutex
+var apiTokens = make(map[string]string) //not muxing this as will be readonly while running bots.
 var isStaging bool
 var baseWebhookURL string
 
@@ -579,7 +601,9 @@ func loadCredentialsFile(filename string) {
 		log.Fatalf("unable to unmarshal json file: %v", err)
 	}
 	isStaging = creds.IsStaging
-	apiTokens = creds.APITokens
+	for _, t := range creds.APITokens {
+		apiTokens[t.Account] = t.APIToken
+	}
 	baseWebhookURL = creds.BaseWebhookURL
 }
 
@@ -641,35 +665,35 @@ func main() {
 	sort.Strings(coins)
 
 	//get balances, remove all orders, remove current webhooks and add new webhooks
-	for _, t := range apiTokens {
-		log.Infof("closing all orders for %s", t.Account)
-		if err := tau.CloseAllOrders(t.APIToken); err != nil {
+	for a, t := range apiTokens {
+		log.Infof("closing all orders for %s", a)
+		if err := tau.CloseAllOrders(t); err != nil {
 			log.Fatalf("Error closing all orders: %v", err)
 		}
-		log.Infof("getting balances for %s", t.Account)
-		if wallets, err := tau.GetBalances(t.APIToken); err != nil {
+		log.Infof("getting balances for %s", a)
+		if wallets, err := tau.GetBalances(t); err != nil {
 			log.Fatalf("Error getting balances: %v", err)
 		} else {
 			for _, w := range wallets {
-				log.Tracef("Balance of %s:%s = %s", t.Account, w.Coin, string(w.Balances.Available))
-				bal.update(t.Account, w.Coin, string(w.Balances.Available))
+				log.Tracef("Balance of %s:%s = %s", a, w.Coin, string(w.Balances.Available))
+				bal.update(a, w.Coin, string(w.Balances.Available))
 			}
 		}
 
-		log.Infof("deleting and recreating webhooks for %s using apitoken %s", t.Account, t.APIToken)
-		if err := tau.DeleteWebhooks(t.APIToken); err != nil {
+		log.Infof("deleting and recreating webhooks for %s using apitoken %s", a, t)
+		if err := tau.DeleteWebhooks(t); err != nil {
 			log.Fatalf("Error deleting webhooks %v", err)
 		}
 		webhookID, err := tau.CreateWebhook(tau.Webhook{
 			Name:              "Bot",
-			Endpoint:          baseWebhookURL + "/webhooks/" + t.APIToken[4:10], //just use a part of apikey
+			Endpoint:          baseWebhookURL + "/webhooks/" + t[4:10], //just use a part of apikey
 			NotifyDeposit:     true,
 			NotifyWithdrawal:  true,
 			NotifyOrderPlaced: false, //we will internally keep track of balances
 			NotifyOrderFilled: true,
 			NotifyTrade:       true,
 			IsActive:          true,
-		}, t.APIToken)
+		}, t)
 		if err != nil {
 			log.Errorf("Error creating webhook: %v", err)
 		} else {
