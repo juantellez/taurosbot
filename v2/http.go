@@ -57,13 +57,13 @@ func webhooksLink(w http.ResponseWriter, r *http.Request) {
 		if whMessage.Object.Type == "withdrawal" {
 			prefix = "-"
 		}
-		bal.update(account, whMessage.Object.Coin, prefix+whMessage.Object.TotalAmount)
+		bal.update(account, whMessage.Object.Coin, prefix+whMessage.Object.TotalAmount, "0")
 	case "OF": //market maker order fill (trade) executed
-		bal.update(account, whMessage.Object.LeftCoin, whMessage.Object.TradeAmountReceived)
-		bal.update(account, whMessage.Object.RightCoin, "-"+whMessage.Object.TradeAmountPaid)
+		bal.update(account, whMessage.Object.LeftCoin, whMessage.Object.TradeAmountReceived, "0")
+		bal.update(account, whMessage.Object.RightCoin, "-"+whMessage.Object.TradeAmountPaid, "0")
 	case "TD": //
-		bal.update(account, whMessage.Object.LeftCoin, whMessage.Object.AmountReceived)
-		bal.update(account, whMessage.Object.RightCoin, "-"+whMessage.Object.AmountPaid)
+		bal.update(account, whMessage.Object.LeftCoin, whMessage.Object.AmountReceived, "0")
+		bal.update(account, whMessage.Object.RightCoin, "-"+whMessage.Object.AmountPaid, "0")
 	default:
 		log.Errorf("Unknown webhook message type: %s", whMessage.Type)
 	}

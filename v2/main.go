@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -185,32 +186,45 @@ func (o *Orders) getLowestBid(market, side string) Order {
 	return orders[0]
 }
 
+// Balance - type
+type Balance struct {
+	Available dec.Decimal `json:"available"`
+	OnOrders  dec.Decimal `json:"on_orders"`
+}
+
 // Balances - type
 type Balances struct {
 	*sync.RWMutex
-	balance map[string]dec.Decimal
+	balance map[string]*Balance
 }
 
 // bal.update - update the balance of account for coin with amount
-func (b *Balances) update(account string, coin string, amount string) {
-	log.Infof("updating balance of %s coin %s with amount %s", account, coin, amount)
+func (b *Balances) update(account string, coin string, availAmount string, orderAmount string) {
+	//log.Infof("updating balance of %s coin %s with avail amount %s order amount %s", account, coin, availAmount, orderAmount)
 	key := account + coin
-	a, _ := dec.NewFromString(amount)
+	aa, _ := dec.NewFromString(availAmount) //todo: error checking?
+	oa, _ := dec.NewFromString(orderAmount)
 	b.Lock()
 	defer b.Unlock()
 	if bal, exists := b.balance[key]; !exists {
-		b.balance[key] = a
+		b.balance[key] = &Balance{
+			Available: aa,
+			OnOrders:  oa,
+		}
 	} else {
-		b.balance[key] = bal.Add(a)
+		b.balance[key] = &Balance{
+			bal.Available.Add(aa),
+			bal.OnOrders.Add(oa),
+		}
 	}
 }
 
-// bal.list - output the balances to screen
+// bal.list - output the balances to console
 func (b *Balances) list() {
 	b.RLock()
 	defer b.RUnlock()
-	for k := range bal.balance {
-		log.Printf("balance[%s] = %s", k, bal.balance[k].String())
+	for k, ba := range b.balance {
+		log.Printf("balance[%s] = avail: %s orders: %s", k, ba.Available.String(), ba.OnOrders.String())
 	}
 	log.Print("============================")
 }
@@ -220,8 +234,9 @@ func (b *Balances) json() []byte {
 	b.RLock()
 	defer b.RUnlock()
 	type bal struct {
-		Coin   string `json:"coin"`
-		Amount string `json:"amount"`
+		Coin      string `json:"coin"`
+		Available string `json:"available"`
+		OnOrders  string `json:"on_orders"`
 	}
 	type acc struct {
 		Account  string `json:"account"`
@@ -232,7 +247,7 @@ func (b *Balances) json() []byte {
 		//log.Printf("account=%s", a)
 		var b1 []bal
 		for _, c := range coins {
-			b1 = append(b1, bal{c, b.balance[a+c].String()})
+			b1 = append(b1, bal{c, b.balance[a+c].Available.String(), b.balance[a+c].OnOrders.String()})
 		}
 		jsonBalances = append(jsonBalances, acc{a, b1})
 	}
@@ -244,10 +259,10 @@ func (b *Balances) json() []byte {
 func (b Balances) available(account string, coin string) dec.Decimal {
 	b.RLock()
 	defer b.RUnlock()
-	return b.balance[account+coin]
+	return b.balance[account+coin].Available.Sub(b.balance[account+coin].OnOrders)
 }
 
-var bal = &Balances{new(sync.RWMutex), make(map[string]dec.Decimal)}
+var bal = &Balances{new(sync.RWMutex), make(map[string]*Balance)}
 var wg sync.WaitGroup
 
 // Bot - data of one bot.
@@ -273,13 +288,13 @@ type Bot struct {
 
 // BotUpdate - parts of the bot that can be updated on the fly, otherwise delete the bot and add new
 type BotUpdate struct {
-	ID          int64   `json:"id"` //required
-	Spread      int64   `json:"spread"`
-	Pct         float64 `json:"pct"`
-	MinInterval int     `json:"min_interval"`
-	MaxInterval int     `json:"max_interval"`
-	Bias        float64 `json:"bias"`
-	MinVariance float64 `json:"min_variance"`
+	ID          int64    `json:"id"` //required
+	Spread      *int64   `json:"spread"`
+	Pct         *float64 `json:"pct"`
+	MinInterval *int     `json:"min_interval"`
+	MaxInterval *int     `json:"max_interval"`
+	Bias        *float64 `json:"bias"`
+	MinVariance *float64 `json:"min_variance"`
 }
 
 // Bots - type
@@ -363,24 +378,24 @@ func (b Bots) update(botUpdate BotUpdate) (err error) {
 	if !exists {
 		return fmt.Errorf("bot.update error, bot ID %d not found", botUpdate.ID)
 	}
-	//todo: check if reflect is better?
-	if botUpdate.Spread > 0.0 {
-		b.bots[botUpdate.ID].Spread = botUpdate.Spread
+	//use nil to see if the struct field is empty
+	if botUpdate.Spread != nil {
+		b.bots[botUpdate.ID].Spread = *botUpdate.Spread
 	}
-	if botUpdate.Pct > 0.0 {
-		b.bots[botUpdate.ID].Pct = botUpdate.Pct
+	if botUpdate.Pct != nil {
+		b.bots[botUpdate.ID].Pct = *botUpdate.Pct
 	}
-	if botUpdate.MinInterval > 0 {
-		b.bots[botUpdate.ID].MinInterval = botUpdate.MinInterval
+	if botUpdate.MinInterval != nil {
+		b.bots[botUpdate.ID].MinInterval = *botUpdate.MinInterval
 	}
-	if botUpdate.MaxInterval > 0 {
-		b.bots[botUpdate.ID].MaxInterval = botUpdate.MaxInterval
+	if botUpdate.MaxInterval != nil {
+		b.bots[botUpdate.ID].MaxInterval = *botUpdate.MaxInterval
 	}
-	if botUpdate.Bias > 0.0 {
-		b.bots[botUpdate.ID].Bias = botUpdate.Bias
+	if botUpdate.Bias != nil {
+		b.bots[botUpdate.ID].Bias = *botUpdate.Bias
 	}
-	if botUpdate.MinVariance > 0.0 {
-		b.bots[botUpdate.ID].MinVariance = botUpdate.MinVariance
+	if botUpdate.MinVariance != nil {
+		b.bots[botUpdate.ID].MinVariance = *botUpdate.MinVariance
 	}
 	return nil
 }
@@ -514,48 +529,63 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 				price = price * exchangeRate.get()
 			}
 			price = price * (1 + bot.Bias)
-			bot.Price = fmt.Sprintf("%.8f", price)
-			if bot.OrderID != 0 {
-				if err := orders.delete(bot.OrderID, apiTokens[bot.Account]); err != nil {
+			prevPrice, _ := strconv.ParseFloat(bot.Price, 10)
+			if bot.OrderID != 0 && prevPrice != 0.0 && bot.MinVariance > math.Abs(price-prevPrice)/prevPrice {
+				//log.Info("skipping bot order proccess, price did not vary enough")
+			} else {
+				bot.Price = fmt.Sprintf("%.8f", price)
+				if bot.OrderID != 0 {
+					if err := orders.delete(bot.OrderID, apiTokens[bot.Account]); err != nil {
+						bot.ErrorMsg = err.Error()
+						//todo: stop bot on error message?
+					}
+					bal.update(bot.Account, coin, "0", "-"+bot.Amount) // subtract order amount to OnOrders
+				}
+				log.Infof("Bot %2d available: %.2f M=%s S=%4s A=%s P=%s", bot.ID, available, bot.Market, bot.Side, bot.Amount, bot.Price)
+				//check for self trade:
+				if bot.Side == "sell" { //todo: combine
+					ords := orders.sort(bot.Market, "buy")
+					sellPrice, _ := dec.NewFromString(bot.Price)
+					for _, o := range ords {
+						if o.Price.GreaterThanOrEqual(sellPrice) {
+							if orders.delete(o.ID, apiTokens[bot.Account]); err != nil {
+								log.Errorf("Unable to delete self trade order %d: %v", o.ID, err) //todo: make fatal?
+							}
+						}
+					}
+				} else {
+					ords := orders.sort(bot.Market, "sell")
+					buyPrice, _ := dec.NewFromString(bot.Price)
+					for _, o := range ords {
+						if o.Price.LessThanOrEqual(buyPrice) {
+							if orders.delete(o.ID, apiTokens[bot.Account]); err != nil {
+								log.Errorf("Unable to delete self trade order %d: %v", o.ID, err)
+							}
+						}
+					}
+				}
+				bot.OrderID, err = orders.add(bot.Market, bot.Side, bot.Price, bot.Amount, apiTokens[bot.Account])
+				if err != nil {
 					bot.ErrorMsg = err.Error()
-					//todo: stop bot on error message?
+				} else {
+					bal.update(bot.Account, coin, "0", bot.Amount) //add order amount to OnOrders
 				}
-				bal.update(bot.Account, coin, bot.Amount)
+				b.bots[ID] = bot
 			}
-			log.Infof("Bot %2d available: %.2f M=%s S=%4s A=%s P=%s", bot.ID, available, bot.Market, bot.Side, bot.Amount, bot.Price)
-			//check for self trade:
-			if bot.Side == "sell" { //todo: combine
-				ords := orders.sort(bot.Market, "buy")
-				sellPrice, _ := dec.NewFromString(bot.Price)
-				for _, o := range ords {
-					if o.Price.GreaterThanOrEqual(sellPrice) {
-						if orders.delete(o.ID, apiTokens[bot.Account]); err != nil {
-							log.Errorf("Unable to delete self trade order %d: %v", o.ID, err) //todo: make fatal?
-						}
-					}
-				}
-			} else {
-				ords := orders.sort(bot.Market, "sell")
-				buyPrice, _ := dec.NewFromString(bot.Price)
-				for _, o := range ords {
-					if o.Price.LessThanOrEqual(buyPrice) {
-						if orders.delete(o.ID, apiTokens[bot.Account]); err != nil {
-							log.Errorf("Unable to delete self trade order %d: %v", o.ID, err)
-						}
-					}
-				}
-			}
-			bot.OrderID, err = orders.add(bot.Market, bot.Side, bot.Price, bot.Amount, apiTokens[bot.Account])
-			if err != nil {
-				bot.ErrorMsg = err.Error()
-			} else {
-				bal.update(bot.Account, coin, "-"+bot.Amount)
-			}
-			b.bots[ID] = bot
 			b.Unlock()
 			ticker = time.NewTicker(time.Duration(minInt+rand.Intn(maxInt)) * time.Millisecond)
 		case <-quit:
 			ticker.Stop()
+			b.Lock()
+			bot := b.bots[ID]
+			if bot.OrderID != 0 {
+				if err := orders.delete(bot.OrderID, apiTokens[bot.Account]); err != nil {
+					bot.ErrorMsg = err.Error()
+				}
+				bot.OrderID = 0
+			}
+			b.bots[ID] = bot
+			b.Unlock()
 			log.Infof("Stopping bot ID %d", ID)
 			wg.Done()
 		}
@@ -676,7 +706,7 @@ func main() {
 		} else {
 			for _, w := range wallets {
 				log.Tracef("Balance of %s:%s = %s", a, w.Coin, string(w.Balances.Available))
-				bal.update(a, w.Coin, string(w.Balances.Available))
+				bal.update(a, w.Coin, string(w.Balances.Available), "0")
 			}
 		}
 
