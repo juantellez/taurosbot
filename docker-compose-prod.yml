@@ -1,0 +1,25 @@
+version: '2.2'
+services:
+
+  web:
+    image: nginx:1.16.1
+    mac_address: 02:00:00:fc:c8:1e
+    expose: 
+      - 443
+      - 80
+    networks:
+      macvlan_bridge:
+        #priority: 100
+        ipv4_address: 158.69.107.120
+    volumes:
+      # - "/home/docker/volumes/tauwebhooks/nginx-root:/usr/share/nginx/html:ro"
+      - "/home/docker/volumes/tauwebhooks/default.conf:/etc/nginx/conf.d/default.conf:ro"
+      - "/home/docker/volumes/tauwebhooks/certs:/etc/letsencrypt/live/reg.vmo.mx"
+      # port forwarding not needed
+
+networks:
+  macvlan_bridge:
+    external:
+      name: vimo_macvlan_bridge
+
+# relay login -k 1ce835a0-7ddb-4c33-b10c-394f90ac78fa -s Hjja5aYuvumn

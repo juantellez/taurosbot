@@ -83,109 +83,6 @@ func exchangeRater(quit chan bool, interval time.Duration) {
 	}
 }
 
-// Order - an order placed in the exchange
-type Order struct {
-	ID     int64       `json:"id"`
-	Market string      `json:"market"`
-	Side   string      `json:"side"`
-	Price  dec.Decimal `json:"price"`
-	Amount dec.Decimal `json:"amount"`
-}
-
-// Orders - all the current orders placed in the exchange
-type Orders struct {
-	*sync.RWMutex
-	Order map[int64]Order
-}
-
-var orders = &Orders{new(sync.RWMutex), make(map[int64]Order)}
-
-func (o *Orders) add(market string, side string, price string, amount string, apiToken string) (int64, error) {
-	o.Lock()
-	defer o.Unlock()
-	p, _ := dec.NewFromString(price)
-	a, _ := dec.NewFromString(amount)
-	orderInfo := fmt.Sprintf("%s s:%4s p:%s a:%s token: %s", time.Now().Format("2006-01-02 15:04:05"), side, price, amount, apiToken)
-	orderID, err := tau.PlaceOrder(tau.Message{
-		Market: market,
-		Amount: amount,
-		Side:   side,
-		Type:   "limit",
-		Price:  price,
-	}, apiToken)
-	if err != nil {
-		log.Errorf("Unable to place new order %s: %v", orderInfo, err)
-		return 0, err
-	}
-	o.Order[orderID] = *&Order{
-		ID:     orderID,
-		Market: market,
-		Side:   side,
-		Price:  p,
-		Amount: a,
-	}
-	return orderID, nil
-}
-
-// SortOrders - slice to sort the orders to find min bids and max asks made in the exchange
-type SortOrders []Order
-
-// Orders.json - get json of currently placed orders
-func (o *Orders) json() []byte {
-	o.RLock()
-	defer o.RUnlock()
-	var so SortOrders
-	for _, o := range o.Order {
-		so = append(so, o)
-	}
-	b, _ := json.MarshalIndent(so, "   ", " ")
-	return b
-}
-
-func (o *Orders) delete(id int64, apiToken string) error {
-	o.Lock()
-	defer o.Unlock()
-	if err := tau.CloseOrder(id, apiToken); err != nil {
-		return err
-	}
-	delete(o.Order, id)
-	return nil
-}
-
-func (o *Orders) list() {
-	o.RLock()
-	defer o.RUnlock()
-	for id, o := range o.Order {
-		log.Printf("ID %d: m: %s s: %s p: %s a: %s", id, o.Market, o.Side, o.Price, o.Amount)
-	}
-}
-
-// Orders.sort() returns slice of all orders of one market and side ordered by price
-func (o *Orders) sort(market, side string) SortOrders {
-	o.RLock()
-	defer o.RUnlock()
-	var so SortOrders
-	for _, o := range o.Order {
-		if o.Market == market && o.Side == side {
-			so = append(so, o)
-		}
-	}
-	sort.Slice(so, func(i, j int) bool {
-		if side == "sell" { //sort ascending
-			return so[i].Price.LessThan(so[j].Price)
-		} //sort descending
-		return so[i].Price.GreaterThan(so[j].Price)
-	})
-	return so
-}
-
-func (o *Orders) getLowestBid(market, side string) Order {
-	o.RLock()
-	defer o.RUnlock()
-	orders := o.sort(market, "sell")
-	return orders[0]
-}
-
 // Balance - type
 type Balance struct {
 	Available dec.Decimal `json:"available"`
@@ -263,6 +160,7 @@ func (b Balances) available(account string, coin string) dec.Decimal {
 }
 
 var bal = &Balances{new(sync.RWMutex), make(map[string]*Balance)}
+
 var wg sync.WaitGroup
 
 // Bot - data of one bot.
@@ -548,6 +446,7 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 					sellPrice, _ := dec.NewFromString(bot.Price)
 					for _, o := range ords {
 						if o.Price.GreaterThanOrEqual(sellPrice) {
+							log.Infof("deleting self trade sell order: %d", o.ID)
 							if orders.delete(o.ID, apiTokens[bot.Account]); err != nil {
 								log.Errorf("Unable to delete self trade order %d: %v", o.ID, err) //todo: make fatal?
 							}
@@ -558,6 +457,7 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 					buyPrice, _ := dec.NewFromString(bot.Price)
 					for _, o := range ords {
 						if o.Price.LessThanOrEqual(buyPrice) {
+							log.Infof("deleting self trade buy order: %d", o.ID)
 							if orders.delete(o.ID, apiTokens[bot.Account]); err != nil {
 								log.Errorf("Unable to delete self trade order %d: %v", o.ID, err)
 							}
@@ -661,18 +561,18 @@ func main() {
 	loadCredentialsFile(flag.Arg(0))
 
 	log.Info("Subscribing to gdax service at gdax:2222")
-	grpcGdaxConn, err := grpc.Dial("localhost:2222", grpc.WithInsecure())
+	grpcGdaxConn, err := grpc.Dial("gdax:2222", grpc.WithInsecure())
 	if err != nil {
-		log.Fatalf("Unable to connect to GDAX grpc service at localhost:2222")
+		log.Fatalf("Unable to connect to GDAX grpc service at gdax:2222")
 	}
 	defer grpcGdaxConn.Close()
 	getTicker = pb.NewTickerServiceClient(grpcGdaxConn)
 	getSpreadPrice = pb.NewSpreadPriceServiceClient(grpcGdaxConn)
 
 	log.Info("Subscribing to openexchange service at ox:2223")
-	grpcOxConn, err := grpc.Dial("localhost:2223", grpc.WithInsecure())
+	grpcOxConn, err := grpc.Dial("ox:2223", grpc.WithInsecure())
 	if err != nil {
-		log.Fatalf("Unable to connect to Ox grpc service at localhost:2223")
+		log.Fatalf("Unable to connect to Ox grpc service at ox:2223")
 	}
 	defer grpcOxConn.Close() //probably not needed
 	getOxRate = pb.NewOxServiceClient(grpcOxConn)
