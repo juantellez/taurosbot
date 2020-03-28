@@ -223,7 +223,9 @@ func (b *Bots) delete(ID int64) {
 	log.Infof("deleting bot ID %d", ID)
 	b.Lock()
 	defer b.Unlock()
-	b.bots[ID].Quit <- true
+	if b.bots[ID].Active {
+		b.bots[ID].Quit <- true
+	}
 	delete(b.bots, ID)
 }
 
@@ -351,7 +353,7 @@ func (b *Bots) restore() {
 	}
 }
 
-func getGdaxTicker(market string) (maxBid, minAsk, price dec.Decimal) {
+func getGdaxTicker(market string) (maxBid, minAsk, price float64) {
 	//convert mxn market to usd for gdax
 	m := strings.Split(market, "-")
 	if m[1] == "MXN" {
@@ -361,16 +363,16 @@ func getGdaxTicker(market string) (maxBid, minAsk, price dec.Decimal) {
 	if err != nil {
 		log.Fatalf("Unable to get ticker from gdax grpc service: %v", err)
 	}
-	var mb, ma dec.Decimal
-	mb, err = dec.NewFromString(res.MaxBid)
+	var mb, ma float64
+	mb, err = strconv.ParseFloat(res.MaxBid, 64)
 	if err != nil { //todo: eliminate checking this once we are sure it is working
 		log.Fatalf("Bad Ticker MaxBid, unable %s to convert to decimal: %v", res.MaxBid, err)
 	}
-	ma, err = dec.NewFromString(res.MinAsk)
+	ma, err = strconv.ParseFloat(res.MinAsk, 64)
 	if err != nil {
 		log.Fatalf("Bad Ticker MinAsk, unable to convert %s to decimal:%v", res.MinAsk, err)
 	}
-	return mb, ma, dec.Avg(mb, ma)
+	return mb, ma, (mb + ma) / 2
 }
 
 func getDepthPrice(market string, side string, depth int64) float64 { //todo: refactor all naming "spread" to "depth"
@@ -409,12 +411,14 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 			m := strings.Split(bot.Market, "-")
 			buySide := m[0]
 			sellSide := m[1]
-			_, _, marketPrice := getGdaxTicker(bot.Market)
+			_, _, mp := getGdaxTicker(bot.Market)
+			marketPrice := mp * exchangeRate.get()
 			var available float64
 			var coin string
 			var err error
 			if bot.Side == "buy" {
-				available, _ = bal.available(bot.Account, sellSide).Div(marketPrice).Float64()
+				available, _ = bal.available(bot.Account, sellSide).Float64()
+				available = available / marketPrice
 				coin = buySide
 			} else {
 				available, _ = bal.available(bot.Account, buySide).Float64()

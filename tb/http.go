@@ -121,8 +121,10 @@ func postBotLink(w http.ResponseWriter, r *http.Request) {
 	//todo: check for valid bot data: valid account, valid market, positive spread, pct, etc
 	var newbot Bot
 	if err := json.Unmarshal(reqBody, &newbot); err != nil {
-		log.Errorf("Error unmarshal json req body to bot: %v", err)
-		return //todo: return http error
+		e := fmt.Sprintf("Error unmarshal json req body to bot: %v", err)
+		log.Error(e)
+		respJSON(w, false, e, "")
+		return
 	}
 	botID := bots.add(newbot)
 	respJSON(w, true, "ok!", fmt.Sprintf(`{"id":"%d"}`, botID))
