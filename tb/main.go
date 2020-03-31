@@ -97,7 +97,7 @@ type Balances struct {
 
 // bal.update - update the balance of account for coin with amount
 func (b *Balances) update(account string, coin string, availAmount string, orderAmount string) {
-	//log.Infof("updating balance of %s coin %s with avail amount %s order amount %s", account, coin, availAmount, orderAmount)
+	log.Infof("updating balance of %s coin %s with avail amount %s order amount %s", account, coin, availAmount, orderAmount)
 	key := account + coin
 	aa, _ := dec.NewFromString(availAmount) //todo: error checking?
 	oa, _ := dec.NewFromString(orderAmount)
@@ -113,7 +113,16 @@ func (b *Balances) update(account string, coin string, availAmount string, order
 			bal.Available.Add(aa),
 			bal.OnOrders.Add(oa),
 		}
+		if b.balance[key].Available.Sub(b.balance[key].OnOrders).LessThan(dec.Zero) {
+			log.Errorf("*****Available Balance turned negative*****")
+		}
 	}
+}
+
+func (b Balances) available(account string, coin string) dec.Decimal {
+	b.RLock()
+	defer b.RUnlock()
+	return b.balance[account+coin].Available.Sub(b.balance[account+coin].OnOrders)
 }
 
 // bal.list - output the balances to console
@@ -153,12 +162,6 @@ func (b *Balances) json() []byte {
 	return j
 }
 
-func (b Balances) available(account string, coin string) dec.Decimal {
-	b.RLock()
-	defer b.RUnlock()
-	return b.balance[account+coin].Available.Sub(b.balance[account+coin].OnOrders)
-}
-
 var bal = &Balances{new(sync.RWMutex), make(map[string]*Balance)}
 
 var wg sync.WaitGroup
@@ -175,6 +178,7 @@ type Bot struct {
 	OrderID      int64     `json:"order_id"`      //current order id placed by this bot
 	Price        string    `json:"price"`         //current price of this bot's order
 	Amount       string    `json:"amount"`        //current amount of this bot's order
+	OnOrder      string    `json:"on_order"`      //amount onOrder to keep track of balances
 	ErrorMsg     string    `json:"error_message"` //last current error message
 	Active       bool      `json:"active"`        //is the bot active or not
 	MinInterval  int       `json:"min_interval"`  //mininum interval in ms before changing order
@@ -207,7 +211,7 @@ func (b *Bots) add(newBot Bot) int64 {
 	b.Lock()
 	newBot.ID = b.lastID
 	newBot.Quit = make(chan bool)
-	log.Infof("Adding bot %+v", newBot)
+	log.Infof("Adding bot ID %d Account: %s Market: %s Side: %s", newBot.ID, newBot.Account, newBot.Market, newBot.Side)
 	b.bots[b.lastID] = &newBot
 	b.lastID++
 	b.Unlock()
@@ -226,7 +230,7 @@ func (b *Bots) delete(ID int64) {
 	if b.bots[ID].Active {
 		b.bots[ID].Quit <- true
 	}
-	delete(b.bots, ID)
+	delete(b.bots, ID) //todo: fix panic that is caused here
 }
 
 // bots.getJSON(ID) returns json of bot ID
@@ -337,7 +341,7 @@ func (b Bots) list() {
 // bots.restore - restore all the bots from json file and start them
 func (b *Bots) restore() {
 	var bots []Bot
-	filename := "bots.json"
+	filename := "/bots/bots.json"
 	log.Infof("Restoring bots previously saved in %s", filename)
 	in, err := ioutil.ReadFile(filename)
 	if err != nil {
@@ -396,10 +400,21 @@ func getDepthPrice(market string, side string, depth int64) float64 { //todo: re
 }
 
 func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
+	var buySide string
+	var sellSide string
+	var coinOnOrder string
 	log.Infof("starting running bot %d", ID)
 	b.RLock()
 	minInt := b.bots[ID].MinInterval
 	maxInt := b.bots[ID].MaxInterval
+	m := strings.Split(b.bots[ID].Market, "-")
+	buySide = m[0]
+	sellSide = m[1]
+	if b.bots[ID].Side == "buy" {
+		coinOnOrder = sellSide
+	} else {
+		coinOnOrder = buySide
+	}
 	b.RUnlock()
 	ticker := time.NewTicker(time.Duration(minInt+rand.Intn(maxInt)) * time.Millisecond)
 	for {
@@ -408,42 +423,41 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 			ticker.Stop()
 			b.Lock()
 			bot := b.bots[ID]
-			m := strings.Split(bot.Market, "-")
-			buySide := m[0]
-			sellSide := m[1]
-			_, _, mp := getGdaxTicker(bot.Market)
-			marketPrice := mp * exchangeRate.get()
 			var available float64
-			var coin string
 			var err error
-			if bot.Side == "buy" {
-				available, _ = bal.available(bot.Account, sellSide).Float64()
-				available = available / marketPrice
-				coin = buySide
-			} else {
-				available, _ = bal.available(bot.Account, buySide).Float64()
-				coin = sellSide
-			}
-			bot.Amount = fmt.Sprintf("%.8f", available*bot.Pct)
-			//todo: set bias according to available balances and bot.Bias
+			//first find out at what price we are trying to buy or sell
 			price := getDepthPrice(bot.Market, bot.Side, bot.Spread)
 			if sellSide == "MXN" {
 				price = price * exchangeRate.get()
 			}
 			price = price * (1 + bot.Bias)
+			//todo: set bias according to available balances and bot.Bias
 			prevPrice, _ := strconv.ParseFloat(bot.Price, 10)
 			if bot.OrderID != 0 && prevPrice != 0.0 && bot.MinVariance > math.Abs(price-prevPrice)/prevPrice {
 				//log.Info("skipping bot order proccess, price did not vary enough")
 			} else {
-				bot.Price = fmt.Sprintf("%.8f", price)
+				//now that we have deterimined the price and that an order is going to be made find the amount
+
+				//first delete the previous order so balances are updated!
 				if bot.OrderID != 0 {
 					if err := orders.delete(bot.OrderID, apiTokens[bot.Account]); err != nil {
 						bot.ErrorMsg = err.Error()
 						//todo: stop bot on error message?
 					}
-					bal.update(bot.Account, coin, "0", "-"+bot.Amount) // subtract order amount to OnOrders
+					bal.update(bot.Account, coinOnOrder, "0", "-"+bot.OnOrder) // subtract order amount to OnOrders
 				}
-				log.Infof("Bot %2d available: %.2f M=%s S=%4s A=%s P=%s", bot.ID, available, bot.Market, bot.Side, bot.Amount, bot.Price)
+				//balance are updated now determine amounts
+				if bot.Side == "buy" { //available when buying is determined by the sell balance divided by price
+					available, _ = bal.available(bot.Account, sellSide).Float64()
+					bot.OnOrder = fmt.Sprintf("%.8f", available*bot.Pct)
+					available = available / price
+				} else {
+					available, _ = bal.available(bot.Account, buySide).Float64()
+					bot.OnOrder = fmt.Sprintf("%.8f", available*bot.Pct)
+				}
+				bot.Amount = fmt.Sprintf("%.8f", available*bot.Pct)
+				bot.Price = fmt.Sprintf("%.8f", price)
+				log.Infof("Bot %2d available: %.2f M=%s S=%4s A=%s P=%s O=%s", bot.ID, available, bot.Market, bot.Side, bot.Amount, bot.Price, bot.OnOrder)
 				//check for self trade:
 				if bot.Side == "sell" { //todo: combine
 					ords := orders.sort(bot.Market, "buy")
@@ -472,7 +486,7 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 				if err != nil {
 					bot.ErrorMsg = err.Error()
 				} else {
-					bal.update(bot.Account, coin, "0", bot.Amount) //add order amount to OnOrders
+					bal.update(bot.Account, coinOnOrder, "0", bot.OnOrder) //add order amount to OnOrders
 				}
 				b.bots[ID] = bot
 			}
@@ -481,16 +495,17 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 		case <-quit:
 			ticker.Stop()
 			b.Lock()
+			defer b.Unlock()
 			bot := b.bots[ID]
-			if bot.OrderID != 0 {
+			if bot.OrderID != 0 { //todo make atomic bal update and orders add/delete?
 				if err := orders.delete(bot.OrderID, apiTokens[bot.Account]); err != nil {
 					bot.ErrorMsg = err.Error()
 				}
+				bal.update(bot.Account, coinOnOrder, "0", "-"+bot.OnOrder) // subtract order amount to bal,OnOrders
 				bot.OrderID = 0
 			}
 			b.bots[ID] = bot
-			b.Unlock()
-			log.Infof("Stopping bot ID %d", ID)
+			log.Infof("Stoppped bot ID %d", ID)
 			wg.Done()
 		}
 	}

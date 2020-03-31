@@ -283,7 +283,7 @@ func PlaceOrder(order Message, apiToken string) (orderID int64, error error) {
 	var d struct {
 		ID int64 `json:"id"`
 	}
-	//log.Tracef("jsonData=%s", string(jsonData))
+	log.Tracef("jsonData=%s", string(jsonData))
 	if err := json.Unmarshal(jsonData, &d); err != nil {
 		return 0, fmt.Errorf("PlaceOrder-> unmarshal jsonData %v", err)
 	}

@@ -8,7 +8,7 @@ ox:
 gdax:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -ldflags="-w -s" -o bin/gdax gdax/*.go
 
-dockertb:
+dockertb: tb
 	docker build -f Dockerfile.tb -t taurosbot/tb .
 
 dockerox:

@@ -23,7 +23,7 @@ func respJSON(w http.ResponseWriter, success bool, message string, data string) 
 
 func webhooksLink(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	log.Infof("POST /webhooks/%s", vars["apikey"])
+	//log.Infof("POST /webhooks/%s", vars["apikey"])
 	reqBody, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		log.Errorf("Error: %v", err)
@@ -34,7 +34,6 @@ func webhooksLink(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(reqBody, &whMessage); err != nil {
 		log.Errorf("Error unmarshal json req body from webhook: %v", err)
 	}
-	//log.Infof("Received webhook type %s Description: %s", whMessage.Type, whMessage.Description)
 	var account string
 	//find account
 	for a, t := range apiTokens {
@@ -49,8 +48,9 @@ func webhooksLink(w http.ResponseWriter, r *http.Request) {
 	if whMessage.Type == "OC" || whMessage.Type == "OP" {
 		return // ignore, bug from the service
 	}
-	log.Printf("Balances of %s BEFORE webhook %s:", account, whMessage.Type)
-	bal.list()
+	log.Infof("Received webhook type %s Description: %s", whMessage.Type, whMessage.Description)
+	//log.Printf("Balances of %s BEFORE webhook %s:", account, whMessage.Type)
+	//bal.list()
 	switch whMessage.Type {
 	case "TR": // Deposit, Withdrawal, Transfer sent and received
 		prefix := "" //negative to subtract
@@ -67,8 +67,8 @@ func webhooksLink(w http.ResponseWriter, r *http.Request) {
 	default:
 		log.Errorf("Unknown webhook message type: %s", whMessage.Type)
 	}
-	log.Print("balances AFTER webhook:")
-	bal.list()
+	//log.Print("balances AFTER webhook:")
+	//bal.list()
 }
 
 func pingLink(w http.ResponseWriter, r *http.Request) {

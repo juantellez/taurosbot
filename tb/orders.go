@@ -35,7 +35,7 @@ func (o *Orders) add(market string, side string, price string, amount string, ap
 	defer o.Unlock()
 	p, _ := dec.NewFromString(price)
 	a, _ := dec.NewFromString(amount)
-	orderInfo := fmt.Sprintf("%s s:%4s p:%s a:%s token: %s", time.Now().Format("2006-01-02 15:04:05"), side, price, amount, apiToken)
+	orderInfo := fmt.Sprintf("%s s:%4s p:%s a:%s", time.Now().Format("2006-01-02 15:04:05"), side, price, amount)
 	orderID, err := tau.PlaceOrder(tau.Message{
 		Market: market,
 		Amount: amount,
@@ -79,6 +79,8 @@ func (o *Orders) delete(id int64, apiToken string) error {
 		return err
 	}
 	delete(o.Order, id)
+	//uddate balances
+
 	return nil
 }
 
