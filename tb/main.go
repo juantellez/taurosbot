@@ -153,7 +153,11 @@ func (b *Balances) json() []byte {
 		//log.Printf("account=%s", a)
 		var b1 []bal
 		for _, c := range coins {
-			b1 = append(b1, bal{c, b.balance[a+c].Available.String(), b.balance[a+c].OnOrders.String()})
+			if bx, exists := b.balance[a+c]; exists {
+				b1 = append(b1, bal{c, bx.Available.String(), bx.OnOrders.String()})
+			} else {
+				b1 = append(b1, bal{c, "0", "0"})
+			}
 		}
 		jsonBalances = append(jsonBalances, acc{a, b1})
 	}
@@ -178,7 +182,6 @@ type Bot struct {
 	OrderID      int64     `json:"order_id"`      //current order id placed by this bot
 	Price        string    `json:"price"`         //current price of this bot's order
 	Amount       string    `json:"amount"`        //current amount of this bot's order
-	OnOrder      string    `json:"on_order"`      //amount onOrder to keep track of balances
 	ErrorMsg     string    `json:"error_message"` //last current error message
 	Active       bool      `json:"active"`        //is the bot active or not
 	MinInterval  int       `json:"min_interval"`  //mininum interval in ms before changing order
@@ -402,7 +405,6 @@ func getDepthPrice(market string, side string, depth int64) float64 { //todo: re
 func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 	var buySide string
 	var sellSide string
-	var coinOnOrder string
 	log.Infof("starting running bot %d", ID)
 	b.RLock()
 	minInt := b.bots[ID].MinInterval
@@ -410,13 +412,9 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 	m := strings.Split(b.bots[ID].Market, "-")
 	buySide = m[0]
 	sellSide = m[1]
-	if b.bots[ID].Side == "buy" {
-		coinOnOrder = sellSide
-	} else {
-		coinOnOrder = buySide
-	}
 	b.RUnlock()
 	ticker := time.NewTicker(time.Duration(minInt+rand.Intn(maxInt)) * time.Millisecond)
+F:
 	for {
 		select {
 		case <-ticker.C:
@@ -439,25 +437,21 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 				//now that we have deterimined the price and that an order is going to be made find the amount
 
 				//first delete the previous order so balances are updated!
-				if bot.OrderID != 0 {
-					if err := orders.delete(bot.OrderID, apiTokens[bot.Account]); err != nil {
-						bot.ErrorMsg = err.Error()
-						//todo: stop bot on error message?
-					}
-					bal.update(bot.Account, coinOnOrder, "0", "-"+bot.OnOrder) // subtract order amount to OnOrders
+				if err := orders.delete(bot.OrderID, bot.Account); err != nil {
+					log.Errorf("error deleting order: %v", err)
+					bot.ErrorMsg = err.Error()
 				}
 				//balance are updated now determine amounts
 				if bot.Side == "buy" { //available when buying is determined by the sell balance divided by price
 					available, _ = bal.available(bot.Account, sellSide).Float64()
-					bot.OnOrder = fmt.Sprintf("%.8f", available*bot.Pct)
 					available = available / price
 				} else {
 					available, _ = bal.available(bot.Account, buySide).Float64()
-					bot.OnOrder = fmt.Sprintf("%.8f", available*bot.Pct)
 				}
 				bot.Amount = fmt.Sprintf("%.8f", available*bot.Pct)
 				bot.Price = fmt.Sprintf("%.8f", price)
-				log.Infof("Bot %2d available: %.2f M=%s S=%4s A=%s P=%s O=%s", bot.ID, available, bot.Market, bot.Side, bot.Amount, bot.Price, bot.OnOrder)
+				log.Infof("Bot %2d available: %.2f M=%s S=%4s A=%s P=%s ", bot.ID, available, bot.Market, bot.Side, bot.Amount, bot.Price)
+
 				//check for self trade:
 				if bot.Side == "sell" { //todo: combine
 					ords := orders.sort(bot.Market, "buy")
@@ -465,7 +459,7 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 					for _, o := range ords {
 						if o.Price.GreaterThanOrEqual(sellPrice) {
 							log.Infof("deleting self trade sell order: %d", o.ID)
-							if orders.delete(o.ID, apiTokens[bot.Account]); err != nil {
+							if orders.delete(o.ID, bot.Account); err != nil {
 								log.Errorf("Unable to delete self trade order %d: %v", o.ID, err) //todo: make fatal?
 							}
 						}
@@ -476,40 +470,42 @@ func (b *Bots) run(ID int64, quit chan bool) { //the meaty part
 					for _, o := range ords {
 						if o.Price.LessThanOrEqual(buyPrice) {
 							log.Infof("deleting self trade buy order: %d", o.ID)
-							if orders.delete(o.ID, apiTokens[bot.Account]); err != nil {
+							if orders.delete(o.ID, bot.Account); err != nil {
 								log.Errorf("Unable to delete self trade order %d: %v", o.ID, err)
 							}
 						}
 					}
 				}
-				bot.OrderID, err = orders.add(bot.Market, bot.Side, bot.Price, bot.Amount, apiTokens[bot.Account])
+
+				bot.OrderID, err = orders.add(bot.Market, bot.Side, bot.Price, bot.Amount, bot.Account)
 				if err != nil {
 					bot.ErrorMsg = err.Error()
-				} else {
-					bal.update(bot.Account, coinOnOrder, "0", bot.OnOrder) //add order amount to OnOrders
+					bot.Active = false
 				}
 				b.bots[ID] = bot
 			}
 			b.Unlock()
-			ticker = time.NewTicker(time.Duration(minInt+rand.Intn(maxInt)) * time.Millisecond)
+			if bot.Active {
+				ticker = time.NewTicker(time.Duration(minInt+rand.Intn(maxInt)) * time.Millisecond)
+				break F
+			}
 		case <-quit:
 			ticker.Stop()
 			b.Lock()
 			defer b.Unlock()
 			bot := b.bots[ID]
-			if bot.OrderID != 0 { //todo make atomic bal update and orders add/delete?
-				if err := orders.delete(bot.OrderID, apiTokens[bot.Account]); err != nil {
-					bot.ErrorMsg = err.Error()
-				}
-				bal.update(bot.Account, coinOnOrder, "0", "-"+bot.OnOrder) // subtract order amount to bal,OnOrders
-				bot.OrderID = 0
+			if err := orders.delete(bot.OrderID, apiTokens[bot.Account]); err != nil {
+				bot.ErrorMsg = err.Error()
 			}
+			bot.OrderID = 0
 			b.bots[ID] = bot
 			log.Infof("Stoppped bot ID %d", ID)
 			wg.Done()
+			break F
 		}
 	}
 }
+
 func (b *Bots) stop() {
 	b.RLock()
 	for _, b := range b.bots {

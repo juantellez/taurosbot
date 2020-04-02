@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,9 +29,26 @@ type Orders struct {
 	Order map[int64]Order
 }
 
+//get the coin on order from market and side
+func coin(market string, side string) string {
+	m := strings.Split(market, "-")
+	if side == "sell" {
+		return m[0]
+	}
+	return m[1]
+}
+
+//get the amount on order depending if its a buy or sell (buy is amount * price)
+func onOrder(amount dec.Decimal, side string, price dec.Decimal) string {
+	if side == "sell" {
+		return amount.String()
+	}
+	return amount.Mul(price).String()
+}
+
 var orders = &Orders{new(sync.RWMutex), make(map[int64]Order)}
 
-func (o *Orders) add(market string, side string, price string, amount string, apiToken string) (int64, error) {
+func (o *Orders) add(market string, side string, price string, amount string, account string) (int64, error) {
 	o.Lock()
 	defer o.Unlock()
 	p, _ := dec.NewFromString(price)
@@ -42,11 +60,12 @@ func (o *Orders) add(market string, side string, price string, amount string, ap
 		Side:   side,
 		Type:   "limit",
 		Price:  price,
-	}, apiToken)
+	}, apiTokens[account])
 	if err != nil {
 		log.Errorf("Unable to place new order %s: %v", orderInfo, err)
 		return 0, err
 	}
+	bal.update(account, coin(market, side), "0", onOrder(a, side, p)) //add amonut OnOrders to balance
 	o.Order[orderID] = *&Order{
 		ID:     orderID,
 		Market: market,
@@ -72,15 +91,18 @@ func (o *Orders) json() []byte {
 	return b
 }
 
-func (o *Orders) delete(id int64, apiToken string) error {
+func (o *Orders) delete(id int64, account string) error {
+	if id == 0 {
+		return nil
+	}
 	o.Lock()
 	defer o.Unlock()
-	if err := tau.CloseOrder(id, apiToken); err != nil {
+	if err := tau.CloseOrder(id, apiTokens[account]); err != nil {
 		return err
 	}
+	bal.update(account, coin(o.Order[id].Market, o.Order[id].Side), "0", "-"+onOrder(o.Order[id].Amount, o.Order[id].Side, o.Order[id].Price)) // subtract order amount to OnOrders
 	delete(o.Order, id)
 	//uddate balances
-
 	return nil
 }
 
